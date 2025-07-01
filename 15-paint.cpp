@@ -92,6 +92,12 @@ int windowH;
 int windowPosX;
 int windowPosY;
 
+cToolCursor*    toolDirty;
+cColorb         paintColorDirty;
+bool            eraseModeDirty = false;  // second eraser later
+
+
+
 // root resource path
 string resourceRoot;
 
@@ -268,6 +274,8 @@ int main(int argc, char* argv[])
 
     // create a haptic device handler
     handler = new cHapticDeviceHandler();
+	int numDevices = handler->getNumDevices();
+	cout << "Number of haptic devices detected: " << numDevices << endl;
 
     // get access to the first available haptic device
     handler->getDevice(hapticDevice, 0);
@@ -298,6 +306,33 @@ int main(int argc, char* argv[])
 
     // start the haptic tool
     tool->start();
+	// DUAL-DEVICE: second “dirty” tool 
+	cGenericHapticDevicePtr hapticDevice2;
+	if (numDevices < 2)
+	{
+		cout << "Only one haptic device detected. Second tool will be disabled." << endl;
+	}
+	else
+	{
+		handler->getDevice(hapticDevice2, 1);
+		// [rest of your toolDirty setup here]
+	}
+
+	handler->getDevice(hapticDevice2, 1);                   // device #2
+
+	toolDirty = new cToolCursor(world);
+	toolDirty->setHapticDevice(hapticDevice2);
+	paintColorDirty.setBrown();                              // mud color
+	toolDirty->m_hapticPoint->m_sphereProxy
+		->m_material->setColor(paintColorDirty);
+	tool->setRadius(toolRadius);
+	toolDirty->setRadius(toolRadius);               // match cleaner
+	toolDirty->setWorkspaceRadius(tool->getWorkspaceRadius());
+	toolDirty->setWaitForSmallForce(true);
+	toolDirty->start();
+	world->addChild(toolDirty);
+	// ————————————————————————————————————————
+
 
 
     //--------------------------------------------------------------------------
@@ -683,6 +718,98 @@ void updateHaptics(void)
 		tool->computeInteractionForces();
 		double force = tool->getDeviceGlobalForce().length();
 		tool->applyToDevice();
+		// DUAL-DEVICE: update second tool 
+		toolDirty->updateFromDevice();
+		toolDirty->computeInteractionForces();
+		toolDirty->applyToDevice();
+		//------------------------------------------------------------------
+		// SECOND TOOL INTERACTION: PALETTE (pick color, exit erase mode)
+		//------------------------------------------------------------------
+		if (toolDirty->isInContact(palette))
+		{
+			eraseModeDirty = false;
+
+			cCollisionEvent* contact = toolDirty->m_hapticPoint->getCollisionEvent(0);
+			if (contact)
+			{
+				cVector3d texCoord = contact->m_triangles
+					->getTexCoordAtPosition(contact->m_index, contact->m_localPos);
+
+				int px, py;
+				palette->m_texture->m_image->getPixelLocation(texCoord, px, py);
+
+				palette->m_texture->m_image->getPixelColor(px, py, paintColorDirty);
+				toolDirty->m_hapticPoint->m_sphereProxy
+					->m_material->setColor(paintColorDirty);
+			}
+		}
+
+		//------------------------------------------------------------------
+		// SECOND TOOL INTERACTION: ERASER WELL (enter erase mode)
+		//------------------------------------------------------------------
+		if (toolDirty->isInContact(eraser))
+		{
+			eraseModeDirty = true;
+			toolDirty->m_hapticPoint->m_sphereProxy
+				->m_material->setColor(g_eraserToolColor);
+			labelMessage->setText("eraser loaded – touch palette to pick colour");
+		}
+
+		//------------------------------------------------------------------
+		// SECOND TOOL INTERACTION: CANVAS (paint or erase)
+		//------------------------------------------------------------------
+		if (toolDirty->isInContact(canvas))
+		{
+			cCollisionEvent* contact = toolDirty->m_hapticPoint->getCollisionEvent(0);
+			if (contact)
+			{
+				cVector3d texCoord = contact->m_triangles
+					->getTexCoordAtPosition(contact->m_index, contact->m_localPos);
+
+				int px, py;
+				canvas->m_texture->m_image->getPixelLocation(texCoord, px, py);
+
+				const double K_INK = 30.0;
+				const double K_SIZE = 10.0;
+				const int    RADIUS = 25;
+				double size = cClamp(K_SIZE * toolDirty->getDeviceGlobalForce().length(),
+					0.0, (double)RADIUS);
+
+				for (int x = -RADIUS; x <= RADIUS; ++x)
+				{
+					for (int y = -RADIUS; y <= RADIUS; ++y)
+					{
+						double d = sqrt((double)(x*x + y*y));
+						if (d > size) continue;
+
+						cColorb src, dst;
+						canvas->m_texture->m_image->getPixelColor(px + x, py + y, src);
+
+						if (!eraseModeDirty)
+						{
+							double f = cClamp(K_INK * timeInterval *
+								cClamp(toolDirty->getDeviceGlobalForce().length(), 0.0, 10.0) *
+								cClamp(1.0 - d / size, 0.0, 1.0),
+								0.0, 1.0);
+							dst.setR((1.0 - f)*src.getR() + f*paintColorDirty.getR());
+							dst.setG((1.0 - f)*src.getG() + f*paintColorDirty.getG());
+							dst.setB((1.0 - f)*src.getB() + f*paintColorDirty.getB());
+						}
+						else
+						{
+							canvasOriginal->getPixelColor(px + x, py + y, dst);
+						}
+
+						canvas->m_texture->m_image->setPixelColor(px + x, py + y, dst);
+					}
+				}
+
+				canvas->m_texture->markForUpdate();
+			}
+		}
+
+		// ——————————————————————————————————————
+
 
 		//------------------------------------------------------------------
 		// INTERACTION WITH PALETTE (pick color, exit erase mode)
