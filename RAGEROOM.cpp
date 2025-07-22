@@ -113,7 +113,7 @@ cShapeLine* graspLine[2];
 // a label to display the rate [Hz] at which the simulation is running
 cLabel* labelHapticRate;
 
-const int GRID = 20;
+const int GRID = 10;
 const int GRID_X = 10;
 const int GRID_Y = 10;
 cMesh* CeilingBlocks[GRID][GRID];
@@ -166,6 +166,11 @@ int windowPosY;
 // last mouse position
 int mouseX;
 int mouseY;
+
+int score;
+
+double maxStiffness[2];
+double workspaceScaleFactor[2];
 
 string resourceRoot;
 #define RESOURCE_PATH(p)    (char*)((resourceRoot+string(p)).c_str())
@@ -362,7 +367,7 @@ int main(int argc, char* argv[])
 		tool[i] = new cToolCursor(world);
 		tool[i]->setHapticDevice(hapticDevice[i]);
 		tool[i]->enableDynamicObjects(true);
-		tool[i]->setWorkspaceRadius(3.4);
+		tool[i]->setWorkspaceRadius(1.5);
 		tool[i]->setRadius(0.04, 0.04);
 		tool[i]->setShowContactPoints(true, false);
 		hapticDevice[i]->setEnableGripperUserSwitch(true);
@@ -378,59 +383,6 @@ int main(int argc, char* argv[])
 		// 加入场景
 		world->addChild(tool[i]);
 	}
-
-    //// get access to the first available haptic device found
-    //handler->getDevice(hapticDevice, 0);
-
-    //// retrieve information about the current haptic device
-    //cHapticDeviceInfo hapticDeviceInfo = hapticDevice->getSpecifications();
-
-    //// create a tool (gripper or pointer)
-    //if (0)//(hapticDeviceInfo.m_actuatedGripper)
-    //{
-    //    tool = new cToolGripper(world);
-    //}
-    //else
-    //{
-    //    tool = new cToolCursor(world);
-    //}
-
-    //// connect the haptic device to the virtual tool
-    //tool->setHapticDevice(hapticDevice);
-
-	//// insert tool into world
-	//world->addChild(tool);
-
-	//// if the haptic device has a gripper, enable it as a user switch
-	//hapticDevice->setEnableGripperUserSwitch(true);
-
- //   // map the physical workspace of the haptic device to a larger virtual workspace.
- //   //tool->setWorkspaceRadius(1.7);//original
-	//tool->setWorkspaceRadius(3.4);//Touch the back wall
- //   // define a radius for the virtual tool contact points (sphere)
- //   tool->setRadius(toolRadius, toolRadius);
-
-	//// hide the device sphere. only show proxy.
-	//tool->setShowContactPoints(true, false);
-
-	//// create a white cursor
-	//((cToolCursor*)tool)->m_hapticPoint->m_sphereProxy->m_material->setWhite();
-
- //   // enable if objects in the scene are going to rotate of translate
- //   // or possibly collide against the tool. If the environment
- //   // is entirely static, you can set this parameter to "false"
- //   tool->enableDynamicObjects(true);
-
-	//// oriente tool with camera
-	//tool->setLocalRot(camera->getLocalRot());
-
- //   // haptic forces are enabled only if small forces are first sent to the device;
- //   // this mode avoids the force spike that occurs when the application starts when 
- //   // the tool is located inside an object for instance. 
- //   tool->setWaitForSmallForce(true);
-
- //   // start the haptic tool
- //   tool->start();
 
 
     //--------------------------------------------------------------------------
@@ -461,7 +413,7 @@ int main(int argc, char* argv[])
     world->addChild(ODEWorld);
 
     // set some gravity
-    ODEWorld->setGravity(cVector3d(0.00, 0.00,-9.81));
+    ODEWorld->setGravity(cVector3d(0.00, 0.00,-59.81));
 
     // define damping properties
     ODEWorld->setAngularDamping(0.00002);
@@ -471,8 +423,8 @@ int main(int argc, char* argv[])
 		// read the scale factor between the physical workspace of the haptic
 		// device and the virtual workspace defined for the tool
 		cHapticDeviceInfo info = hapticDevice[i]->getSpecifications();
-		double workspaceScaleFactor = tool[i]->getWorkspaceScaleFactor();
-		double maxStiffness = info.m_maxLinearStiffness / workspaceScaleFactor;
+		workspaceScaleFactor[i] = tool[i]->getWorkspaceScaleFactor();
+		maxStiffness[i] = info.m_maxLinearStiffness / workspaceScaleFactor[i];
 
 		graspActive[i] = false;
 		graspObject[i] = nullptr;
@@ -482,18 +434,6 @@ int main(int argc, char* argv[])
 		graspLine[i]->setShowEnabled(false);
 		world->addChild(graspLine[i]);
 	}
-
-	////initialize of grasping
-
-	//graspActive = false;
-	//graspObject = nullptr;
-
-	//graspLine = new cShapeLine();
-	//graspLine->m_colorPointA.setBlue();
-	//graspLine->m_colorPointB.setBlue();
-	//graspLine->setShowEnabled(false);
-	//world->addChild(graspLine);
-
 
 
     //////////////////////////////////////////////////////////////////////////
@@ -524,19 +464,19 @@ int main(int argc, char* argv[])
     // define some material properties for each cube
     cMaterial mat0, mat1, mat2;
     mat0.setRedIndian();
-    mat0.setStiffness(0.3 * maxStiffness);
+    mat0.setStiffness(0.2 * maxStiffness[0]);
     mat0.setDynamicFriction(0.6);
     mat0.setStaticFriction(0.6);
     object0->setMaterial(mat0);
 
     mat1.setBlueRoyal();
-    mat1.setStiffness(0.3 * maxStiffness);
+	mat1.setStiffness(0.2 * maxStiffness[0]);
     mat1.setDynamicFriction(0.6);
     mat1.setStaticFriction(0.6);
     object1->setMaterial(mat1);
 
     mat2.setGreenDarkSea();
-    mat2.setStiffness(0.3 * maxStiffness);
+	mat2.setStiffness(0.2 * maxStiffness[0]);
     mat2.setDynamicFriction(0.6);
     mat2.setStaticFriction(0.6);
     object2->setMaterial(mat2);
@@ -553,9 +493,9 @@ int main(int argc, char* argv[])
     ODEBody2->createDynamicBox(size, size, size);
 
     // define some mass properties for each cube
-    ODEBody0->setMass(0.05);
-    ODEBody1->setMass(0.15);
-    ODEBody2->setMass(0.25);
+    ODEBody0->setMass(0.03);
+    ODEBody1->setMass(0.02);
+    ODEBody2->setMass(0.01);
 
     // set position of each cube
     ODEBody0->setLocalPos(0.0,-0.6,-0.5);
@@ -586,53 +526,6 @@ int main(int argc, char* argv[])
     ODEGPlane4->createStaticPlane(cVector3d( width, 0.0, 0.0), cVector3d(-1.0,0.0, 0.0));
     ODEGPlane5->createStaticPlane(cVector3d(-1.5, 0.0, 0.0), cVector3d( 1.0,0.0, 0.0));
 
-
-    //////////////////////////////////////////////////////////////////////////
-    // GROUND
-    //////////////////////////////////////////////////////////////////////////
-//
-//    // create a mesh that represents the ground
-//    cMesh* ground = new cMesh();
-//    ODEWorld->addChild(ground);
-//
-//    // create a plane
-//    double groundSize = 3.0;
-//    cCreatePlane(ground, groundSize, groundSize);
-//
-//    // position ground in world where the invisible ODE plane is located (ODEGPlane1)
-//    ground->setLocalPos(0.0, 0.0, -1.0);
-//
-//	// create texture property
-//	cTexture2dPtr texture_gd = cTexture2d::create();
-//	ground->setTexture(texture_gd);
-//
-//	// load texture from file
-//	bool fileload = ground->m_texture->loadFromFile(RESOURCE_PATH("../resources/images/brick-color.jpg"));
-//	if (!fileload)
-//	{
-//#if defined(_MSVC)
-//		fileload = ground->m_texture->loadFromFile("../../../../../bin/resources/images/brick-color.png");
-//#endif
-//	}
-//	if (!fileload)
-//	{
-//		cout << "Error - Texture image 'brick-color.png' failed to load correctly." << endl;
-//		close();
-//		return (-1);
-//	}
-//
-//	// define some material properties and apply to mesh
-//	ground->setUseMaterial(false);
-//	ground->setUseTexture(true);
-//	ground->m_material->setStiffness(0.5 * maxStiffness);
-//	ground->m_material->setStaticFriction(0.20);
-//	ground->m_material->setDynamicFriction(0.15);
-//	ground->m_material->setHapticTriangleSides(true, false);
-//
-//	//// setup collision detector
-//	ground->createAABBCollisionDetector(toolRadius);
-//
-	// 地面格子数量（10x10）
 	//////////////////////////////////////////////////////////////////////////
 	// GROUND
 	//////////////////////////////////////////////////////////////////////////
@@ -665,7 +558,7 @@ int main(int argc, char* argv[])
 			GroundBlocks[i][j]->setUseTexture(false); // 如要纹理，改为 true 并加载
 
 			// 设置触觉属性
-			GroundBlocks[i][j]->m_material->setStiffness(0.5 * maxStiffness);
+			GroundBlocks[i][j]->m_material->setStiffness(0.2 * maxStiffness[0]);
 			GroundBlocks[i][j]->m_material->setStaticFriction(0.20);
 			GroundBlocks[i][j]->m_material->setDynamicFriction(0.15);
 			GroundBlocks[i][j]->m_material->setHapticTriangleSides(true, false);
@@ -675,48 +568,6 @@ int main(int argc, char* argv[])
 		}
 	}
 
-	//////////////////////////////////////////////////////////////////////////
-	// Ceiling
-	//////////////////////////////////////////////////////////////////////////
-//	// create a mesh that represents the Ceiling
-//	cMesh* Ceiling = new cMesh();
-//	ODEWorld->addChild(Ceiling);
-//
-//	// create a plane
-//	double CeilingSize = 3.0;
-//	cMatrix3d rot_ceiling;
-//	rot_ceiling.setAxisAngleRotationRad(1, 0, 0, cDegToRad(180));  // 180° rotation about X-axis
-//	cCreatePlane(Ceiling, CeilingSize, CeilingSize, cVector3d(0, 0, 0.6), rot_ceiling);
-//
-//	// create texture property
-//	cTexture2dPtr texture_cl = cTexture2d::create();
-//	Ceiling->setTexture(texture_cl);
-//
-////	// load texture from file
-////	fileload = Ceiling->m_texture->loadFromFile(RESOURCE_PATH("../resources/images/brick-color.jpg"));
-////	if (!fileload)
-////	{
-////#if defined(_MSVC)
-////		fileload = Ceiling->m_texture->loadFromFile("../../../../../bin/resources/images/background.png");
-////#endif
-////	}
-////	if (!fileload)
-////	{
-////		cout << "Error - Texture image 'background.png' failed to load correctly." << endl;
-////		close();
-////		return (-1);
-////	}
-//
-//	// define some material properties and apply to mesh
-//	Ceiling->setUseMaterial(false);
-//	Ceiling->setUseTexture(true);
-//	Ceiling->m_material->setStiffness(0.5 * maxStiffness);
-//	Ceiling->m_material->setStaticFriction(0.20);
-//	Ceiling->m_material->setDynamicFriction(0.15);
-//	Ceiling->m_material->setHapticTriangleSides(true, false);
-//
-//	//// setup collision detector
-//	Ceiling->createAABBCollisionDetector(toolRadius);
 
 	//////////////////////////////////////////////////////////////////////////
 	// Ceiling
@@ -750,7 +601,7 @@ int main(int argc, char* argv[])
 			CeilingBlocks[i][j]->setUseMaterial(true);
 
 			// 设置触觉属性（如果你需要）
-			CeilingBlocks[i][j]->m_material->setStiffness(0.5 * maxStiffness);
+			CeilingBlocks[i][j]->m_material->setStiffness(0.2 * maxStiffness[0]);
 			CeilingBlocks[i][j]->m_material->setStaticFriction(0.2);
 			CeilingBlocks[i][j]->m_material->setDynamicFriction(0.15);
 			CeilingBlocks[i][j]->m_material->setHapticTriangleSides(true, false);
@@ -765,44 +616,6 @@ int main(int argc, char* argv[])
 	//////////////////////////////////////////////////////////////////////////
 	// BackWall
 	//////////////////////////////////////////////////////////////////////////
-//	// create a mesh that represents the Ceiling
-//	cMesh* BackWall = new cMesh();
-//	ODEWorld->addChild(BackWall);
-//
-//
-//	cMatrix3d rot_backwall;
-//	rot_backwall.setAxisAngleRotationRad(0, 1, 0, cDegToRad(90));  // 180° rotation about X-axis
-//	cCreatePlane(BackWall, 1.8, 3.0, cVector3d(-1.5, 0, -0.3), rot_backwall);
-//
-//	// create texture property
-//	cTexture2dPtr texture_bw = cTexture2d::create();
-//	BackWall->setTexture(texture_bw);
-//
-//	// load texture from file
-//	fileload = BackWall->m_texture->loadFromFile(RESOURCE_PATH("../resources/images/brick-color.jpg"));
-//	if (!fileload)
-//	{
-//#if defined(_MSVC)
-//		fileload = BackWall->m_texture->loadFromFile("../../../../../bin/resources/images/canvas.jpg");
-//#endif
-//	}
-//	if (!fileload)
-//	{
-//		cout << "Error - Texture image 'canvas.jpg' failed to load correctly." << endl;
-//		close();
-//		return (-1);
-//	}
-//
-//	// define some material properties and apply to mesh
-//	BackWall->setUseMaterial(false);
-//	BackWall->setUseTexture(true);
-//	BackWall->m_material->setStiffness(0.5 * maxStiffness);
-//	BackWall->m_material->setStaticFriction(0.20);
-//	BackWall->m_material->setDynamicFriction(0.15);
-//	BackWall->m_material->setHapticTriangleSides(true, false);
-//
-//	//// setup collision detector
-//	BackWall->createAABBCollisionDetector(toolRadius);
 
 	double width_backwall = 3.0;  // X方向宽度
 	double height_backwall = 1.8; // Y方向高度
@@ -836,7 +649,7 @@ int main(int argc, char* argv[])
 			BackWallBlocks[i][j]->setWireMode(false);
 
 			// 设置触觉属性
-			BackWallBlocks[i][j]->m_material->setStiffness(0.5 * maxStiffness);
+			BackWallBlocks[i][j]->m_material->setStiffness(0.2 * maxStiffness[0]);
 			BackWallBlocks[i][j]->m_material->setStaticFriction(0.2);
 			BackWallBlocks[i][j]->m_material->setDynamicFriction(0.15);
 			BackWallBlocks[i][j]->m_material->setHapticTriangleSides(true, false);
@@ -847,48 +660,7 @@ int main(int argc, char* argv[])
 	}
 
 
-	//////////////////////////////////////////////////////////////////////////
-	// LeftWall
-	//////////////////////////////////////////////////////////////////////////
-//	// create a mesh that represents the Ceiling
-//	cMesh* LeftWall = new cMesh();
-//	ODEWorld->addChild(LeftWall);
-//
-//
-//	cMatrix3d rot_LeftWall;
-//	rot_LeftWall.setAxisAngleRotationRad(1, 0, 0, cDegToRad(270));  // 180° rotation about X-axis
-//	cCreatePlane(LeftWall, 3.0, 1.8, cVector3d(0, -1.5, -0.3), rot_LeftWall);// cVector3d(front,right,up)
-//
-//	// create texture property
-//	cTexture2dPtr texture_lw = cTexture2d::create();
-//	LeftWall->setTexture(texture_lw);
-//
-//	// load texture from file
-//	fileload = LeftWall->m_texture->loadFromFile("../../../../../bin/resources/images/ceiling.jpeg");
-//	if (!fileload)
-//	{
-//#if defined(_MSVC)
-//		fileload = LeftWall->m_texture->loadFromFile("../../../../../bin/resources/images/canvas.jpg");
-//#endif
-//	}
-//	if (!fileload)
-//	{
-//		cout << "Error - Texture image 'canvas.jpg' failed to load correctly." << endl;
-//		close();
-//		return (-1);
-//	}
-//
-//	// define some material properties and apply to mesh
-//	LeftWall->setUseMaterial(false);
-//	LeftWall->setUseTexture(true);
-//	LeftWall->m_material->setStiffness(0.5 * maxStiffness);
-//	LeftWall->m_material->setStaticFriction(0.20);
-//	LeftWall->m_material->setDynamicFriction(0.15);
-//	LeftWall->m_material->setHapticTriangleSides(true, false);
-//	
-//	// setup collision detector
-//	LeftWall->createAABBCollisionDetector(toolRadius);
-//
+
 	//////////////////////////////////////////////////////////////////////////
 	// LeftWall
 	//////////////////////////////////////////////////////////////////////////
@@ -925,7 +697,7 @@ int main(int argc, char* argv[])
 			LeftWallBlocks[i][j]->setWireMode(false);
 
 			// 设置触觉属性
-			LeftWallBlocks[i][j]->m_material->setStiffness(0.5 * maxStiffness);
+			LeftWallBlocks[i][j]->m_material->setStiffness(0.2 * maxStiffness[0]);
 			LeftWallBlocks[i][j]->m_material->setStaticFriction(0.2);
 			LeftWallBlocks[i][j]->m_material->setDynamicFriction(0.15);
 			LeftWallBlocks[i][j]->m_material->setHapticTriangleSides(true, false);
@@ -1013,7 +785,7 @@ int main(int argc, char* argv[])
 			RightWallBlocks[i][j]->setUseTexture(false); // 禁用纹理以便看颜色
 
 			// 触觉参数
-			RightWallBlocks[i][j]->m_material->setStiffness(0.5 * maxStiffness);
+			RightWallBlocks[i][j]->m_material->setStiffness(0.2 * maxStiffness[0]);
 			RightWallBlocks[i][j]->m_material->setStaticFriction(0.20);
 			RightWallBlocks[i][j]->m_material->setDynamicFriction(0.15);
 			RightWallBlocks[i][j]->m_material->setHapticTriangleSides(true, false);
@@ -1072,7 +844,7 @@ void keySelect(unsigned char key, int x, int y)
         }
         else
         {
-            ODEWorld->setGravity(cVector3d(0.0, 0.0,-9.81));
+            ODEWorld->setGravity(cVector3d(0.0, 0.0,-59.81));
         }
     }
 
@@ -1129,8 +901,12 @@ void mouseMove(int x, int y)
 	camera->setSphericalAzimuthDeg(azimuthDeg);
 	camera->setSphericalPolarDeg(polarDeg);
 
-	// line up tool with camera
-	tool->setLocalRot(camera->getLocalRot());
+	//// line up tool with camera
+	//tool->setLocalRot(camera->getLocalRot());
+	for (int i = 0; i < 2; i++) {
+		tool[i]->setLocalRot(camera->getLocalRot());
+	}
+
 }
 
 //------------------------------------------------------------------------------
@@ -1144,7 +920,11 @@ void close(void)
     while (!simulationFinished) { cSleepMs(100); }
 
     // close haptic device
-    tool->stop();
+    //tool->stop();
+	for (int i = 0; i < 2; i++) {
+		tool[i]->stop();
+	}
+
 }
 
 //---------------------------------------------------------------------------
@@ -1194,6 +974,34 @@ void updateGraphics(void)
     GLenum err = glGetError();
     if (err != GL_NO_ERROR) printf("Error:  %s\n", gluErrorString(err));
 }
+int calculateScore()
+{
+	int score = 0;
+	for (int m = 0; m < GRID; ++m)
+	{
+		for (int n = 0; n < GRID; ++n)
+		{
+			cColorf c;
+
+			c = CeilingBlocks[m][n]->m_material->m_diffuse;
+			if (c.getR() == 1.0 && c.getG() == 0.0 && c.getB() == 0.0) score++;
+
+			c = GroundBlocks[m][n]->m_material->m_diffuse;
+			if (c.getR() == 1.0 && c.getG() == 0.0 && c.getB() == 0.0) score++;
+
+			c = BackWallBlocks[m][n]->m_material->m_diffuse;
+			if (c.getR() == 1.0 && c.getG() == 0.0 && c.getB() == 0.0) score++;
+
+			c = LeftWallBlocks[m][n]->m_material->m_diffuse;
+			if (c.getR() == 1.0 && c.getG() == 0.0 && c.getB() == 0.0) score++;
+
+			c = RightWallBlocks[m][n]->m_material->m_diffuse;
+			if (c.getR() == 1.0 && c.getG() == 0.0 && c.getB() == 0.0) score++;
+		}
+	}
+	return score;
+}
+
 
 //---------------------------------------------------------------------------
 
@@ -1237,6 +1045,16 @@ void updateHaptics(void)
         // update frequency counter
         frequencyCounter.signal(1);
 
+		static int lastScore = -1;  // 初始值设为非法分数
+
+		int currentScore = calculateScore();
+
+		if (currentScore != lastScore)
+		{
+			printf("Score: %d\n", currentScore);
+			lastScore = currentScore;
+		}
+
 
         /////////////////////////////////////////////////////////////////////
         // HAPTIC FORCE COMPUTATION
@@ -1245,232 +1063,194 @@ void updateHaptics(void)
         // compute global reference frames for each object
         world->computeGlobalPositions(true);
 
-        // update position and orientation of tool
-        tool->updateFromDevice();
+		for (int i = 0; i < 2; i++) {
+			tool[i]->updateFromDevice();
+			tool[i]->computeInteractionForces();  // 保留 CHAI3D 内部力，如墙面、proxy 碰撞力
 
-        // compute interaction forces
-        tool->computeInteractionForces();
+			//------------------------------------------------------------
+			// Step 1: 设备线性阻尼（防止剧烈震动）
+			//------------------------------------------------------------
+			cVector3d velocity;
+			hapticDevice[i]->getLinearVelocity(velocity);
+			cVector3d dampingForce = -0.8 * velocity;
+			tool[i]->addDeviceGlobalForce(dampingForce);
 
-        // send forces to haptic device
-        tool->applyToDevice();
+			//------------------------------------------------------------
+			// Step 3: 应用到设备（必须）
+			//------------------------------------------------------------
+			tool[i]->applyToDevice();
+		}
+
+
 
 		/////////////////////////////////////////////////////////////////////////
 		// MANIPULATION
 		/////////////////////////////////////////////////////////////////////////
-
-		// compute transformation from world to tool (haptic device)
-		cTransform world_T_tool = tool->getDeviceGlobalTransform();
-
-		// get status of user switch
-		bool button = tool->getUserSwitch(0);
-		// Declare ahead, fill in only if safe
-		cVector3d posA;
-		cVector3d posB;
-
-		// Only compute positions if tool and graspObject are safe
-		if (graspActive && graspObject != nullptr &&
-			tool->getNumHapticPoints() > 0 &&
-			tool->getHapticPoint(0) != nullptr)
+		for (int i = 0; i < 2; i++)
 		{
-			posA = graspObject->getLocalTransform() * graspPos;
-			posB = tool->getHapticPoint(0)->getGlobalPosGoal();
-		}
+			// Get current tool and grasp state
+			cGenericTool* t = tool[i];
 
+			// Compute transformation from world to tool
+			cTransform world_T_tool = t->getDeviceGlobalTransform();
 
-		//
-		if (graspActive)
-		{
-			if (tool->getUserSwitch(0))
+			// Get button state
+			bool button = t->getUserSwitch(0);
+
+			// Compute positions if safe
+			cVector3d posA, posB;
+			if (graspActive[i] && graspObject[i] != nullptr &&
+				t->getNumHapticPoints() > 0 &&
+				t->getHapticPoint(0) != nullptr)
 			{
-				if (graspObject != nullptr &&
-					tool->getNumHapticPoints() > 0 &&
-					tool->getHapticPoint(0) != nullptr)
+				posA = graspObject[i]->getLocalTransform() * graspPos[i];
+				posB = t->getHapticPoint(0)->getGlobalPosGoal();
+			}
+
+			// Grasp active
+			if (graspActive[i])
+			{
+				if (button)
 				{
-					cVector3d posA = graspObject->getLocalTransform() * graspPos;
-					cVector3d posB = tool->getHapticPoint(0)->getGlobalPosGoal();
-
-					if (graspLine != nullptr)
+					if (graspObject[i] != nullptr &&
+						t->getNumHapticPoints() > 0 &&
+						t->getHapticPoint(0) != nullptr)
 					{
-						graspLine->m_pointA = posA;
-						graspLine->m_pointB = posB;
-						graspLine->setShowEnabled(true);
-					}
+						posA = graspObject[i]->getLocalTransform() * graspPos[i];
+						posB = t->getHapticPoint(0)->getGlobalPosGoal();
 
-					// Apply spring force
-					cVector3d force = 5.0 * (posB - posA);
-					graspObject->addExternalForceAtPoint(force, posA);
-					tool->addDeviceGlobalForce(-force);
+						cVector3d graspForce = 3.0 * (posB - posA);
+
+						graspObject[i]->addExternalForceAtPoint(graspForce, posA);
+						tool[i]->addDeviceGlobalForce(-graspForce);
+
+						if (graspLine[i] != nullptr)
+						{
+							graspLine[i]->m_pointA = posA;
+							graspLine[i]->m_pointB = posB;
+							graspLine[i]->setShowEnabled(true);
+						}
+					}
+				}
+				else
+				{
+					if (graspLine[i]) graspLine[i]->setShowEnabled(false);
+					graspActive[i] = false;
+					graspObject[i] = nullptr;
 				}
 			}
 			else
 			{
-				if (graspLine != nullptr)
+				// Attempt to grasp new object
+				cHapticPoint* interactionPoint = t->getHapticPoint(0);
+				if (interactionPoint != nullptr && interactionPoint->getNumCollisionEvents() > 0)
 				{
-					graspLine->setShowEnabled(false);
-				}
-				graspActive = false;
-				graspObject = nullptr;
-			}
-		}
-		else
-		{
-			// Detect new object to grasp
-			cHapticPoint* interactionPoint = tool->getHapticPoint(0);
-			if (interactionPoint != nullptr && interactionPoint->getNumCollisionEvents() > 0)
-			{
-				cCollisionEvent* collisionEvent = interactionPoint->getCollisionEvent(0);
-				cGenericObject* obj = collisionEvent->m_object->getOwner()->getOwner();
-				cODEGenericBody* body = dynamic_cast<cODEGenericBody*>(obj);
+					cCollisionEvent* collisionEvent = interactionPoint->getCollisionEvent(0);
+					cGenericObject* obj = collisionEvent->m_object->getOwner()->getOwner();
+					cODEGenericBody* body = dynamic_cast<cODEGenericBody*>(obj);
 
-				if (body != nullptr)
-				{
-					body->addExternalForceAtPoint(
-						-0.3 * interactionPoint->getLastComputedForce(),
-						collisionEvent->m_globalPos);
-
-					if (tool->getUserSwitch(0))
+					if (body != nullptr)
 					{
-						graspObject = body;
-						graspPos = collisionEvent->m_localPos;
-						graspActive = true;
-					}
-				}
-			}
-		}
+						body->addExternalForceAtPoint(
+							-0.3 * interactionPoint->getLastComputedForce(),
+							collisionEvent->m_globalPos);
 
-
-
-		////
-		//// STATE 1:
-		//// Idle mode - user presses the user switch
-		////
-		//if ((state == IDLE) && (button == true))
-		//{
-		//	// check if at least one contact has occurred
-		//	if (((cToolCursor*)tool)->m_hapticPoint->getNumCollisionEvents() > 0)
-		//	{
-		//		// get contact event
-		//		cCollisionEvent* collisionEvent = ((cToolCursor*)tool)->m_hapticPoint->getCollisionEvent(0);
-		//		// get object from contact event
-		//		selectedObject = collisionEvent->m_object;
-		//	}
-		//	else
-		//	{
-		//		selectedObject = object0 ? object0 : (object1 ? object1 : object2);
-		//	}
-		//	// get transformation from object
-		//	cTransform world_T_object = selectedObject->getGlobalTransform();
-		//	// compute inverse transformation from contact point to object 
-		//	cTransform tool_T_world = world_T_tool;
-		//	tool_T_world.invert();
-		//	// store current transformation tool
-		//	tool_T_object = tool_T_world * world_T_object;
-		//	// update state
-		//	state = SELECTION;
-		//}
-
-
-		////
-		//// STATE 2:
-		//// Selection mode - operator maintains user switch enabled and moves object
-		////
-		//else if ((state == SELECTION) && (button == true))
-		//{
-		//	// compute new transformation of object in global coordinates
-		//	cTransform world_T_object = world_T_tool * tool_T_object;
-
-		//	// compute new transformation of object in local coordinates
-		//	cTransform parent_T_world = selectedObject->getParent()->getLocalTransform();
-		//	parent_T_world.invert();
-		//	cTransform parent_T_object = parent_T_world * world_T_object;
-
-		//	// assign new local transformation to object
-		//	selectedObject->setLocalTransform(parent_T_object);
-
-		//	// set zero forces when manipulating objects
-		//	tool->setDeviceGlobalForce(0.0, 0.0, 0.0);
-
-		//	tool->initialize();
-		//}
-
-		////
-		//// STATE 3:
-		//// Finalize Selection mode - operator releases user switch.
-		////
-		//else
-		//{
-		//	state = IDLE;
-		//}
-
-		tool->applyToDevice();
-
-        /////////////////////////////////////////////////////////////////////
-        // DYNAMIC SIMULATION
-        /////////////////////////////////////////////////////////////////////
-
-        // for each interaction point of the tool we look for any contact events
-        // with the environment and apply forces accordingly
-        int numInteractionPoints = tool->getNumHapticPoints();
-        for (int i=0; i<numInteractionPoints; i++)
-        {
-            // get pointer to next interaction point of tool
-            cHapticPoint* interactionPoint = tool->getHapticPoint(i);
-
-            // check all contact points
-            int numContacts = interactionPoint->getNumCollisionEvents();
-            for (int i=0; i<numContacts; i++)
-            {
-                cCollisionEvent* collisionEvent = interactionPoint->getCollisionEvent(i);
-
-                // given the mesh object we may be touching, we search for its owner which
-                // could be the mesh itself or a multi-mesh object. Once the owner found, we
-                // look for the parent that will point to the ODE object itself.
-                cGenericObject* object = collisionEvent->m_object->getOwner()->getOwner();
-
-                // cast to ODE object
-                cODEGenericBody* ODEobject = dynamic_cast<cODEGenericBody*>(object);
-				if (object != NULL){
-					for (int m = 0; m < GRID; ++m)
-					{
-						for (int n = 0; n < GRID; ++n)
+						if (button)
 						{
-							if (object == CeilingBlocks[m][n])
-							{
-								// 🔥 highlight the touched block
-								CeilingBlocks[m][n]->m_material->setRed();
-							}
-							else if (object == GroundBlocks[m][n])
-							{
-								// 🔥 highlight the touched block
-								GroundBlocks[m][n]->m_material->setRed();
-							}
-							else if(object == BackWallBlocks[m][n])
-							{
-								// 🔥 highlight the touched block
-								BackWallBlocks[m][n]->m_material->setRed();
-							}
-							else if(object == LeftWallBlocks[m][n])
-							{
-								// 🔥 highlight the touched block
-								LeftWallBlocks[m][n]->m_material->setRed();
-							}
-							else if (object == RightWallBlocks[m][n])
-							{
-								// 🔥 highlight the touched block
-								RightWallBlocks[m][n]->m_material->setRed();
-							}
-
+							graspObject[i] = body;
+							graspPos[i] = collisionEvent->m_localPos;
+							graspActive[i] = true;
 						}
 					}
 				}
-                // if ODE object, we apply interaction forces
-                if (ODEobject != NULL)
-                {
-                    ODEobject->addExternalForceAtPoint(-0.3 * interactionPoint->getLastComputedForce(),
-                                                       collisionEvent->m_globalPos);
-                }
-            }
-        }
+			}
+
+			t->applyToDevice();
+		}
+
+
+for (int p = 0; p < 2; p++)  // go through every player
+{
+	int numInteractionPoints = tool[p]->getNumHapticPoints();
+	for (int i = 0; i < numInteractionPoints; i++)
+	{
+		cHapticPoint* interactionPoint = tool[p]->getHapticPoint(i);
+
+		int numContacts = interactionPoint->getNumCollisionEvents();
+		for (int j = 0; j < numContacts; j++)
+		{
+			cCollisionEvent* collisionEvent = interactionPoint->getCollisionEvent(j);
+			cGenericObject* object = collisionEvent->m_object->getOwner()->getOwner();
+
+			// 判断是否为 ODE 对象（可施加力反馈）
+			cODEGenericBody* ODEobject = dynamic_cast<cODEGenericBody*>(object);
+
+			if (object != NULL)
+			{
+				for (int m = 0; m < GRID; ++m)
+				{
+					for (int n = 0; n < GRID; ++n)
+					{
+
+						if (object == CeilingBlocks[m][n])
+						{
+							if (p == 0)
+								CeilingBlocks[m][n]->m_material->setRed();     // 玩家1触碰 → 变红
+							else if (p == 1)
+								CeilingBlocks[m][n]->m_material->setBlue();    // 玩家2触碰 → 恢复
+						}
+						else if (object == GroundBlocks[m][n])
+						{
+							if (p == 0)
+								GroundBlocks[m][n]->m_material->setRed();
+							else if (p == 1)
+								GroundBlocks[m][n]->m_material->setBlue();
+						}
+						else if (object == BackWallBlocks[m][n])
+						{
+							if (p == 0)
+								BackWallBlocks[m][n]->m_material->setRed();
+							else if (p == 1)
+								BackWallBlocks[m][n]->m_material->setGrayGainsboro();
+						}
+						else if (object == LeftWallBlocks[m][n])
+						{
+							if (p == 0)
+								LeftWallBlocks[m][n]->m_material->setRed();
+							else if (p == 1)
+								LeftWallBlocks[m][n]->m_material->setGrayGainsboro();
+						}
+						else if (object == RightWallBlocks[m][n])
+						{
+							if (p == 0)
+								RightWallBlocks[m][n]->m_material->setRed();
+							else if (p == 1)
+								RightWallBlocks[m][n]->m_material->setGrayGainsboro();
+						}
+					}
+				}
+			}
+
+
+			// ✅ 对 ODE 对象施加力反馈
+			/*if (ODEobject != NULL)
+			{
+				ODEobject->addExternalForceAtPoint(
+					-0.3 * interactionPoint->getLastComputedForce(),
+					collisionEvent->m_globalPos
+					);
+			}*/
+			// ✅ 只在未抓取状态下轻推 cube，避免和 grasp 冲突
+			if (ODEobject != nullptr && !graspActive[p]) {
+				ODEobject->addExternalForceAtPoint(
+					-0.3 * interactionPoint->getLastComputedForce(),
+					collisionEvent->m_globalPos
+					);
+			}
+
+		}
+	}
+}
 
         // update simulation
         ODEWorld->updateDynamics(timeInterval);
