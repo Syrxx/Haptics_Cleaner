@@ -661,6 +661,17 @@ int main(int argc, char* argv[])
 	//////////////////////////////////////////////////////////////////////////
 	double groundSize = 3.0;
 	double cellSize_ground = groundSize / GRID;
+	// ---- Floor Texture and Haptics ----
+	cTexture2dPtr textureGround = cTexture2d::create();
+	bool fileloader = textureGround->loadFromFile(RESOURCE_PATH("D:/chai3d-3.1.1-VisualStudio/chai3d-3.1.1/bin/resources/images/brownboard.jpg"));
+	if (!fileloader)
+	{
+#if defined(_MSVC)
+		fileloader = textureGround->loadFromFile("../../../bin/resources/images/brownboard.jpg");
+#endif
+	}
+	cNormalMapPtr normalGround = cNormalMap::create();
+	normalGround->createMap(textureGround);
 
 	for (int i = 0; i < GRID; ++i)
 	{
@@ -679,8 +690,25 @@ int main(int argc, char* argv[])
 			rot.identity();
 
 			cCreatePlane(GroundBlocks[i][j], cellSize_ground, cellSize_ground, pos, rot);
-			GroundBlocks[i][j]->setUseMaterial(true);
-			GroundBlocks[i][j]->m_material->setBlue();
+			//GroundBlocks[i][j]->setUseMaterial(true);
+			//GroundBlocks[i][j]->m_material->setBlue();
+			// Apply texture
+			GroundBlocks[i][j]->setUseTexture(true);
+			GroundBlocks[i][j]->setTexture(textureGround);
+			GroundBlocks[i][j]->m_normalMap = normalGround;
+
+			textureGround->setWrapModeS(GL_REPEAT);
+			textureGround->setWrapModeT(GL_REPEAT);
+
+
+			// Set haptic feel
+			GroundBlocks[i][j]->m_material->setWhite();  // ensures texture is visible
+			GroundBlocks[i][j]->m_material->setStiffness(0.4 * maxStiffness[0]);
+			GroundBlocks[i][j]->m_material->setStaticFriction(0.2);
+			GroundBlocks[i][j]->m_material->setDynamicFriction(0.2);
+			GroundBlocks[i][j]->m_material->setTextureLevel(0.2);
+			GroundBlocks[i][j]->m_material->setHapticTriangleSides(true, false);
+
 
 			// Force update and collision safety
 			GroundBlocks[i][j]->computeAllNormals();               // ensure normals
@@ -873,45 +901,7 @@ int main(int argc, char* argv[])
 	//////////////////////////////////////////////////////////////////////////
 	// RightWall
 	//////////////////////////////////////////////////////////////////////////
-	//	// create a mesh that represents the Ceiling
-	//	cMesh* RightWall = new cMesh();
-	//	ODEWorld->addChild(RightWall);
-	//
-	//
-	//	cMatrix3d rot_RightWall;
-	//	rot_RightWall.setAxisAngleRotationRad(1, 0, 0, cDegToRad(90));  // 180° rotation about X-axis
-	//	cCreatePlane(RightWall, 3.0, 1.8, cVector3d(0, 1.5, -0.3), rot_RightWall);
-	//
-	//	// create texture property
-	//	cTexture2dPtr texture_rw = cTexture2d::create();
-	//	RightWall->setTexture(texture_rw);
-	//
-	//	// load texture from file
-	//	fileload = RightWall->m_texture->loadFromFile(RESOURCE_PATH("../resources/images/brick-color.jpg"));
-	//	if (!fileload)
-	//	{
-	//#if defined(_MSVC)
-	//		fileload = RightWall->m_texture->loadFromFile("../../../../../bin/resources/images/canvas.jpg");
-	//#endif
-	//	}
-	//	if (!fileload)
-	//	{
-	//		cout << "Error - Texture image 'canvas.jpg' failed to load correctly." << endl;
-	//		close();
-	//		return (-1);
-	//	}
-	//
-	//	// define some material properties and apply to mesh
-	//	RightWall->setUseMaterial(false);
-	//	RightWall->setUseTexture(true);
-	//	RightWall->m_material->setStiffness(0.5 * maxStiffness);
-	//	RightWall->m_material->setStaticFriction(0.20);
-	//	RightWall->m_material->setDynamicFriction(0.15);
-	//	RightWall->m_material->setHapticTriangleSides(true, false);
-	//
-	//	//// setup collision detector
-	//	RightWall->createAABBCollisionDetector(toolRadius);
-	//
+	
 	//////////////////////////////////////////////////////////////////////////
 	// RightWall
 	//////////////////////////////////////////////////////////////////////////
