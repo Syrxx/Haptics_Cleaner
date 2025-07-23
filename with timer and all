@@ -878,7 +878,7 @@ void updateGraphics(void)
 	}
 	else if (!gameStarted && !gameEnded)
 	{
-		labelTimer->setText("Time: 60.0s");
+		labelTimer->setText("Time: " + cStr(gameDuration, 1) + "s");
 		labelTimer->setLocalPos(windowW - labelTimer->getWidth() - 20, windowH - labelTimer->getHeight() - 20);
 		labelStartMessage->setLocalPos(20, windowH - labelStartMessage->getHeight() - 20);
 	}
