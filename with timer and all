@@ -168,47 +168,68 @@ static cMesh* createPlane(double sx, double sy, const cVector3d& pos, const cMat
 }
 
 
-
+// for scoring
+int leftWallTotalPixels = 0;
+int rightWallTotalPixels = 0;
+int backWallTotalPixels = 0;
 // Compute how much of the wall has been painted 
-double computePaintCoverage(const PaintWall& w)
+double computePaintCoverage(const PaintWall& w, int total)
 {
-	if (!w.texture || !w.texture->m_image || !w.originalImage) return 0.0;
+	if (!w.texture || !w.originalImage || total == 0) return 0.0;
 
-	int wTexW = w.texture->m_image->getWidth();
-	int wTexH = w.texture->m_image->getHeight();
-	int wOrigW = w.originalImage->getWidth();
-	int wOrigH = w.originalImage->getHeight();
+	int painted = 0;
+	cColorb current, original;
 
-	// clamp loop to the smaller dimensions to avoid out-of-bounds access
-	int maxW = std::min(wTexW, wOrigW);
-	int maxH = std::min(wTexH, wOrigH);
+	int maxX = std::min(w.originalImage->getWidth(), w.texture->m_image->getWidth());
+	int maxY = std::min(w.originalImage->getHeight(), w.texture->m_image->getHeight());
 
-	int total = 0;
-	int changed = 0;
-
-	for (int x = 0; x < maxW; ++x)
+	for (int x = 0; x < maxX; ++x)
 	{
-		for (int y = 0; y < maxH; ++y)
+		for (int y = 0; y < maxY; ++y)
 		{
-			cColorb current, original;
-			w.texture->m_image->getPixelColor(x, y, current);
 			w.originalImage->getPixelColor(x, y, original);
+			w.texture->m_image->getPixelColor(x, y, current);
 
-			if (original.getA() > 0)
+			if (original.getA() > 0 &&
+				(current.getR() != original.getR() ||
+				current.getG() != original.getG() ||
+				current.getB() != original.getB()))
 			{
-				total++;
-				if (current.getR() != original.getR() ||
-					current.getG() != original.getG() ||
-					current.getB() != original.getB())
-				{
-					changed++;
-				}
+				painted++;
 			}
 		}
 	}
 
-	if (total == 0) return 0.0;
-	return 100.0 * changed / total;
+	return 100.0 * painted / total;
+}
+double computeUnpaintedCoverage(const PaintWall& w, int total)
+{
+	if (!w.texture || !w.originalImage || total == 0) return 0.0;
+
+	int untouched = 0;
+	cColorb current, original;
+
+	int maxX = std::min(w.originalImage->getWidth(), w.texture->m_image->getWidth());
+	int maxY = std::min(w.originalImage->getHeight(), w.texture->m_image->getHeight());
+
+	for (int x = 0; x < maxX; ++x)
+	{
+		for (int y = 0; y < maxY; ++y)
+		{
+			w.originalImage->getPixelColor(x, y, original);
+			w.texture->m_image->getPixelColor(x, y, current);
+
+			if (original.getA() > 0 &&
+				current.getR() == original.getR() &&
+				current.getG() == original.getG() &&
+				current.getB() == original.getB())
+			{
+				untouched++;
+			}
+		}
+	}
+
+	return 100.0 * untouched / total;
 }
 
 
@@ -255,7 +276,7 @@ void paintPixels(PaintWall& w, int px, int py, const cColorb& color, double forc
 {
 	if (!w.texture || !w.texture->m_image) return;
 
-	double size = cClamp((K_SIZE * force), 0.0, (double)BRUSH_SIZE);
+	double size = cClamp((1.8 * K_SIZE * force), 0.0, 1.5 * BRUSH_SIZE);
 	for (int x = -BRUSH_SIZE; x<BRUSH_SIZE; ++x)
 	{
 		for (int y = -BRUSH_SIZE; y<BRUSH_SIZE; ++y)
@@ -675,6 +696,34 @@ void keySelect(unsigned char key, int x, int y)
 
 			labelStartMessage->setText("");
 			labelWinnerMessage->setText("");
+
+			// Save fresh state of walls as "original"
+			leftWall.texture->m_image->copyTo(leftWall.originalImage);
+			rightWall.texture->m_image->copyTo(rightWall.originalImage);
+			backWall.texture->m_image->copyTo(backWall.originalImage);
+
+
+			// Count only visible (non-transparent) pixels
+			auto countVisiblePixels = [](const PaintWall& w) -> int {
+				int width = w.originalImage->getWidth();
+				int height = w.originalImage->getHeight();
+				int total = 0;
+				cColorb pixel;
+
+				for (int x = 0; x < width; ++x)
+				{
+					for (int y = 0; y < height; ++y)
+					{
+						w.originalImage->getPixelColor(x, y, pixel);
+						if (pixel.getA() > 0) total++;
+					}
+				}
+				return total;
+			};
+
+			leftWallTotalPixels = countVisiblePixels(leftWall);
+			rightWallTotalPixels = countVisiblePixels(rightWall);
+			backWallTotalPixels = countVisiblePixels(backWall);
 		}
 	}
 	if (key == 'g') ODEWorld->setGravity(ODEWorld->getGravity().length()>0 ? cVector3d(0, 0, 0) : cVector3d(0, 0, -9.81));
@@ -791,30 +840,38 @@ void graphicsTimer(int d){ if (simulationRunning) glutPostRedisplay(); glutTimer
 
 void computeAndShowWinner()
 {
-	double p1 = computePaintCoverage(leftWall) + computePaintCoverage(rightWall);
-	double p2 = 100.0 - p1; // Assuming player 2 erases
-	string winner;
+	// Player 1: Total painted % on all 3 walls
+	double p1 = computePaintCoverage(leftWall, leftWallTotalPixels)
+		+ computePaintCoverage(rightWall, rightWallTotalPixels)
+		+ computePaintCoverage(backWall, backWallTotalPixels);
 
+	// Player 2: Total unpainted % on all 3 walls
+	double p2 = computeUnpaintedCoverage(leftWall, leftWallTotalPixels)
+		+ computeUnpaintedCoverage(rightWall, rightWallTotalPixels)
+		+ computeUnpaintedCoverage(backWall, backWallTotalPixels);
+
+	// Decide winner
+	string winner;
 	if (p1 > p2)
-		winner = " Player 1 Wins!";
+		winner = "Player 1 Wins!";
 	else if (p2 > p1)
-		winner = " Player 2 Wins!";
+		winner = "Player 2 Wins!";
 	else
 		winner = "It's a Tie!";
 
+	// Display label on screen
 	labelWinnerMessage->setText(winner);
-
-	// Re-center the label
 	int xMid = (windowW - labelWinnerMessage->getWidth()) / 2;
 	int yMid = (windowH - labelWinnerMessage->getHeight()) / 2;
 	labelWinnerMessage->setLocalPos(xMid, yMid);
 
+	// Console printout
 	cout << "\n====== FINAL SCORES ======\n";
-	cout << "Left + Right (P1): " << p1 << " %\n";
-	cout << "Back Wall (P2):    " << p2 << " %\n";
+	cout << "P1 (Left + Right Painted):  " << p1 << " %\n";
+	cout << "P2 (All Walls Untouched):   " << p2 << " %\n";
 	cout << "Winner: " << winner << endl;
-
 }
+
 
 
 
@@ -849,31 +906,8 @@ void updateGraphics(void)
 
 		if (timeLeft <= 0.0)
 		{
-			gameEnded = true;
-			gameStarted = false;
-
-			labelStartMessage->setText("");
-			labelTimer->setText("Time: 0.0s");
-
-			// --- Score logic (normalized to 100%) ---
-			double p1 = computePaintCoverage(leftWall) + computePaintCoverage(rightWall);
-			double p2 = computePaintCoverage(backWall); // Assume Player 2 erases everything else
-
-			double total = p1 + p2;
-			double pctP1 = (total > 0) ? (100.0 * p1 / total) : 0.0;
-			double pctP2 = 100.0 - pctP1;
-
-			string winnerText;
-			if (pctP1 > pctP2)
-				winnerText = "Player 1 Wins!";
-			else if (pctP2 > pctP1)
-				winnerText = "Player 2 Wins!";
-			else
-				winnerText = "It's a Tie!";
-
-			labelWinnerMessage->setText(winnerText);
-			labelWinnerMessage->setLocalPos((windowW - labelWinnerMessage->getWidth()) / 2,
-				(windowH - labelWinnerMessage->getHeight()) / 2);
+			gameEnded = true;              // Prevent future updates
+			computeAndShowWinner();       // Run winner logic once
 		}
 	}
 	else if (!gameStarted && !gameEnded)
@@ -1010,7 +1044,5 @@ void updateHaptics(void)
 	}
 
 	simulationFinished = true;
-	computeAndShowWinner();
-
 
 }
