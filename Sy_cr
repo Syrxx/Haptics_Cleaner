@@ -1,10 +1,3 @@
-/////fxed vibration when grabbing
-//removed ceiling
-//added extra floor as old has issues, you can go thorough some tiles!
-//added pool balls
-
-
-
 #include "chai3d.h"
 #include <algorithm>
 
@@ -16,6 +9,11 @@ using namespace std;
 #else
 #include "GLUT/glut.h"
 #endif
+#include <sstream>
+#include <iomanip>
+#include <cmath>  
+
+
 
 // stereo Mode
 /*
@@ -64,13 +62,27 @@ cShapeLine* graspLine[2];
 cLabel* labelHapticRate;
 
 const int GRID = 10;
-const int GRID_X = 10;
-const int GRID_Y = 10;
+//const int GRID_X = 20;
+//const int GRID_Y = 20;
 //cMesh* CeilingBlocks[GRID][GRID];
 cMesh* GroundBlocks[GRID][GRID];
 cMesh* BackWallBlocks[GRID][GRID];
-cMesh* LeftWallBlocks[GRID_X][GRID_Y];
-cMesh* RightWallBlocks[GRID_X][GRID_Y];
+cMesh* LeftWallBlocks[GRID][GRID];
+cMesh* RightWallBlocks[GRID][GRID];
+
+
+// UI Labels
+cLabel* labelScore;
+cLabel* labelTimer;
+cLabel* labelInfo;
+
+// Game state
+bool gameRunning = false;
+bool gameStarted = false;
+double gameTimeRemaining = 60.0; // e.g. 60 seconds
+
+
+
 //---------------------------------------------------------------------------
 // ODE MODULE VARIABLES
 //---------------------------------------------------------------------------
@@ -250,7 +262,7 @@ int main(int argc, char* argv[])
 		cVector3d(0.0, 0.0, 1.0));   // direction of the "up" vector
 
 	camera->setSphericalDeg(
-		3,//2.3,  // radius (distance from center)X
+		3.5,//2.3,  // radius (distance from center)X
 		5,  // polar angle (looking straight down Z)Z
 		0  // azimuth angle Y
 		);
@@ -328,19 +340,23 @@ int main(int argc, char* argv[])
 		tool[i]->setShowContactPoints(true, false);
 		hapticDevice[i]->setEnableGripperUserSwitch(true);
 
-		// 设置外观和方向
 		((cToolCursor*)tool[i])->m_hapticPoint->m_sphereProxy->m_material->setWhite();
+		// Reduce bounciness of the ball tool
+		((cToolCursor*)tool[i])->m_hapticPoint->m_sphereProxy->m_material->setStiffness(0.1 * maxStiffness[i]);
+		((cToolCursor*)tool[i])->m_hapticPoint->m_sphereProxy->m_material->setDamping(0.05 * maxStiffness[i]);
+		((cToolCursor*)tool[i])->m_hapticPoint->m_sphereProxy->m_material->setStaticFriction(0.2);
+		((cToolCursor*)tool[i])->m_hapticPoint->m_sphereProxy->m_material->setDynamicFriction(0.15);
+
 		tool[i]->setLocalRot(camera->getLocalRot());
 		tool[i]->setWaitForSmallForce(true);
 
-		// 启动 tool
 		tool[i]->start();
 		workspaceScaleFactor[i] = tool[i]->getWorkspaceScaleFactor();
 		cHapticDeviceInfo info = hapticDevice[i]->getSpecifications();
 		maxStiffness[i] = info.m_maxLinearStiffness / workspaceScaleFactor[i];
-
-		// 加入场景
 		world->addChild(tool[i]);
+		
+
 	}
 
 
@@ -362,6 +378,18 @@ int main(int argc, char* argv[])
 	camera->m_frontLayer->addChild(labelHapticRate);
 
 
+	labelScore = new cLabel(font);
+	labelScore->m_fontColor.setBlack();
+	camera->m_frontLayer->addChild(labelScore);
+
+	labelTimer = new cLabel(font);
+	labelTimer->m_fontColor.setBlack();
+	camera->m_frontLayer->addChild(labelTimer);
+
+	labelInfo = new cLabel(font);
+	labelInfo->m_fontColor.setRed();
+	labelInfo->setText("Press SPACE to start!");
+	camera->m_frontLayer->addChild(labelInfo);
 
 
 
@@ -383,8 +411,9 @@ int main(int argc, char* argv[])
 	ODEWorld->setGravity(cVector3d(0.00, 0.00, -9.81));
 
 	// define damping properties
-	ODEWorld->setAngularDamping(0.00002);
-	ODEWorld->setLinearDamping(0.00002);
+	ODEWorld->setLinearDamping(0.05);     // smoother stops
+	ODEWorld->setAngularDamping(0.05);    // less spin wobble
+
 
 	for (int i = 0; i < numHapticDevices; i++) {
 		graspActive[i] = false;
@@ -397,8 +426,7 @@ int main(int argc, char* argv[])
 		world->addChild(graspLine[i]);
 	}
 
-	cODEGenericBody* staticFloor = new cODEGenericBody(ODEWorld);
-	staticFloor->createStaticPlane(cVector3d(0.0, 0.0, -1.0), cVector3d(0.0, 0.0, 1.0));
+
 
 
 	//balls
@@ -466,9 +494,9 @@ int main(int argc, char* argv[])
 	ODEBall2->createDynamicSphere(radius);
 
 	// set mass
-	ODEBall0->setMass(0.001);
-	ODEBall1->setMass(0.001);
-	ODEBall2->setMass(0.001);
+	ODEBall0->setMass(0.02);
+	ODEBall1->setMass(0.02);
+	ODEBall2->setMass(0.02);
 
 	// initial positions
 	ODEBall0->setLocalPos(0.4, -0.3, -0.4);
@@ -489,73 +517,76 @@ int main(int argc, char* argv[])
 	// 3 ODE BLOCKS
 	//////////////////////////////////////////////////////////////////////////
 
-	// create a new ODE object that is automatically added to the ODE world
+	// Create a new ODE object
 	ODEBody0 = new cODEGenericBody(ODEWorld);
 	ODEBody1 = new cODEGenericBody(ODEWorld);
 	ODEBody2 = new cODEGenericBody(ODEWorld);
 
-	// create a virtual mesh  that will be used for the geometry representation of the dynamic body
+	// Create cube meshes
+	double size = 0.20;
 	cMesh* object0 = new cMesh();
 	cMesh* object1 = new cMesh();
 	cMesh* object2 = new cMesh();
 
-	// create a cube mesh
-	double size = 0.20;
 	cCreateBox(object0, size, size, size);
-	object0->createAABBCollisionDetector(toolRadius);
-
 	cCreateBox(object1, size, size, size);
-	object1->createAABBCollisionDetector(toolRadius);
-
 	cCreateBox(object2, size, size, size);
-	object2->createAABBCollisionDetector(toolRadius);
 
-	// define some material properties for each cube
+	// Set up colors & materials
 	cMaterial mat0, mat1, mat2;
-	mat0.setRedIndian();
+	mat0.setColor(cColorf(1.0f, 0.3f, 0.3f)); // strawberry
+	mat1.setColor(cColorf(0.2f, 0.7f, 1.0f)); // blueberry
+	mat2.setColor(cColorf(0.4f, 1.0f, 0.4f)); // lime
+
+	mat0.setShininess(100);
+	mat1.setShininess(100);
+	mat2.setShininess(100);
+
 	mat0.setStiffness(0.2 * maxStiffness[0]);
-
-
-
-	mat0.setDynamicFriction(0.2);
-	mat0.setStaticFriction(0.2);
-
-	object0->setMaterial(mat0);
-
-	mat1.setBlueRoyal();
 	mat1.setStiffness(0.2 * maxStiffness[0]);
-	mat1.setDynamicFriction(0.6);
-	mat1.setStaticFriction(0.6);
-	object1->setMaterial(mat1);
-
-	mat2.setGreenDarkSea();
 	mat2.setStiffness(0.2 * maxStiffness[0]);
-	mat2.setDynamicFriction(0.6);
-	mat2.setStaticFriction(0.6);
+
+	mat0.setStaticFriction(0.2); mat0.setDynamicFriction(0.2);
+	mat1.setStaticFriction(0.6); mat1.setDynamicFriction(0.6);
+	mat2.setStaticFriction(0.6); mat2.setDynamicFriction(0.6);
+
+	// Assign materials
+	object0->setMaterial(mat0);
+	object1->setMaterial(mat1);
 	object2->setMaterial(mat2);
 
-	// add mesh to ODE object
+	// Enable transparency
+	object0->setUseTransparency(true);
+	object1->setUseTransparency(true);
+	object2->setUseTransparency(true);
+
+	object0->setTransparencyLevel(0.4);
+	object1->setTransparencyLevel(0.4);  // NOT 1!!
+	object2->setTransparencyLevel(0.4);
+
+	// Set up collision
+	object0->createAABBCollisionDetector(toolRadius);
+	object1->createAABBCollisionDetector(toolRadius);
+	object2->createAABBCollisionDetector(toolRadius);
+
+	// Connect to ODE objects
 	ODEBody0->setImageModel(object0);
 	ODEBody1->setImageModel(object1);
 	ODEBody2->setImageModel(object2);
 
-	// create a dynamic model of the ODE object. Here we decide to use a box just like
-	// the object mesh we just defined
 	ODEBody0->createDynamicBox(size, size, size);
 	ODEBody1->createDynamicBox(size, size, size);
 	ODEBody2->createDynamicBox(size, size, size);
 
-	// define some mass properties for each cube
-	ODEBody0->setMass(0.003);
-	ODEBody1->setMass(0.002);
-	ODEBody2->setMass(0.01);
+	ODEBody0->setMass(0.005);
+	ODEBody1->setMass(0.02);
+	ODEBody2->setMass(0.03);
 
-	// set position of each cube
 	ODEBody0->setLocalPos(0.0, -0.6, -0.5);
 	ODEBody1->setLocalPos(0.0, 0.6, -0.5);
 	ODEBody2->setLocalPos(0.0, 0.0, -0.5);
 
-	// rotate central cube 45 degrees around z-axis
+	// Optional: rotation
 	ODEBody0->rotateAboutGlobalAxisDeg(0, 0, 1, 45);
 
 
@@ -579,6 +610,52 @@ int main(int argc, char* argv[])
 	ODEGPlane4->createStaticPlane(cVector3d(width, 0.0, 0.0), cVector3d(-1.0, 0.0, 0.0));
 	ODEGPlane5->createStaticPlane(cVector3d(-1.5, 0.0, 0.0), cVector3d(1.0, 0.0, 0.0));
 
+	cMesh* FrontBlockingWall;
+
+
+	//////////////////////// invisible ceiling wall
+	// Create invisible ceiling wall (to block haptic tool at the top)
+	cMesh* CeilingBlockingWall = new cMesh();
+	world->addChild(CeilingBlockingWall);
+	ODEWorld->addChild(CeilingBlockingWall);
+	// Same size as ground and walls
+	double ceilingWidth = 3.0;   // Y direction
+	double ceilingDepth = 3.0;   // X direction
+	double ceilingHeight = 3.0;  // Z direction
+
+	// Position: top of the room, symmetric to ground (which is at z = -1.0)
+	cVector3d ceilingPos(0.0, 0.0, -1.0 + ceilingHeight);  // z = 2.0
+
+	// Rotation: flat horizontal plane
+	cMatrix3d ceilingRot;
+	ceilingRot.identity();  // No rotation, just like the ground
+
+	// Create the plane
+	cCreatePlane(CeilingBlockingWall, ceilingDepth, ceilingWidth, ceilingPos, ceilingRot);
+
+
+	// Invisible materialGroundBlockingMesh
+	cMaterial invisibleMatCeiling;
+	invisibleMatCeiling.setWhite(); 
+	invisibleMatCeiling.setTransparencyLevel(1.0);  // Fully transparent
+	CeilingBlockingWall->setMaterial(invisibleMatCeiling);
+	CeilingBlockingWall->setUseMaterial(true);
+	CeilingBlockingWall->setUseTransparency(true);
+	CeilingBlockingWall->setUseTexture(false);
+	CeilingBlockingWall->setWireMode(false);
+	CeilingBlockingWall->setUseDisplayList(false);
+	CeilingBlockingWall->setShowEnabled(false);  // disables visual rendering
+
+	// Enable haptic collision
+	// Physical ceiling wall for collision when grabbing
+	cODEGenericBody* ODECeilingPlane = new cODEGenericBody(ODEWorld);
+	ODECeilingPlane->createStaticPlane(
+		cVector3d(0.0, 0.0, 2.0),   // position: same as visual ceiling Z
+		cVector3d(0.0, 0.0, -1.0)); // normal: facing downward
+
+
+
+
 	//////////////////////////////////////////////////////////////////////////
 	// GROUND
 	//////////////////////////////////////////////////////////////////////////
@@ -593,31 +670,31 @@ int main(int argc, char* argv[])
 			GroundBlocks[i][j] = new cMesh();
 			ODEWorld->addChild(GroundBlocks[i][j]);
 
-			// 计算格子中心点位置
 			double x_center = -groundSize / 2.0 + (i + 0.5) * cellSize_ground;
 			double y_center = -groundSize / 2.0 + (j + 0.5) * cellSize_ground;
-			double z_center = -1.0;  // 地面 Z 坐标
+			double z_center = -1.0;
 
 			cVector3d pos(x_center, y_center, z_center);
 			cMatrix3d rot;
-			rot.identity();  // 地面不旋转
+			rot.identity();
 
-			// 创建格子平面
 			cCreatePlane(GroundBlocks[i][j], cellSize_ground, cellSize_ground, pos, rot);
-
-			// 使用材质颜色或纹理（这里先使用颜色）
-			GroundBlocks[i][j]->m_material->setBlue();
 			GroundBlocks[i][j]->setUseMaterial(true);
-			GroundBlocks[i][j]->setUseTexture(false); // 如要纹理，改为 true 并加载
+			GroundBlocks[i][j]->m_material->setBlue();
 
-			// 设置触觉属性
+			// Force update and collision safety
+			GroundBlocks[i][j]->computeAllNormals();               // ensure normals
+			GroundBlocks[i][j]->computeGlobalPositions(true);      // force sync
+			GroundBlocks[i][j]->setUseDisplayList(false);          // dynamic update
+			GroundBlocks[i][j]->createAABBCollisionDetector(0.1);  // bigger margin
 			GroundBlocks[i][j]->m_material->setStiffness(0.2 * maxStiffness[0]);
-			GroundBlocks[i][j]->m_material->setStaticFriction(0.20);
-			GroundBlocks[i][j]->m_material->setDynamicFriction(0.15);
+			GroundBlocks[i][j]->m_material->setStaticFriction(0.2);
+			GroundBlocks[i][j]->m_material->setDynamicFriction(1);
 			GroundBlocks[i][j]->m_material->setHapticTriangleSides(true, false);
 
-			// 启用碰撞检测
-			GroundBlocks[i][j]->createAABBCollisionDetector(toolRadius);
+
+
+
 		}
 	}
 
@@ -629,7 +706,7 @@ int main(int argc, char* argv[])
 	//////////////////////////////////////////////////////////////////////////
 
 	double width_backwall = 3.0;  // X方向宽度
-	double height_backwall = 1.8; // Y方向高度
+	double height_backwall = 3; // 1.8; // Y方向高度
 	double cellwidth_backwall = width_backwall / GRID;
 	double cellHeight_backwall = height_backwall / GRID;
 
@@ -646,7 +723,7 @@ int main(int argc, char* argv[])
 			// 计算位置（左上角开始，从 (-1.5, ..., ...) 开始）
 			double x = -1.5;
 			double y_center = -width_backwall / 2.0 + (i + 0.5) * cellwidth_backwall;
-			double z_center = -0.3 - height_backwall / 2.0 + (j + 0.5) * cellHeight_backwall;
+			double z_center = -1.0 + (j + 0.5) * cellHeight_backwall;
 
 			cVector3d pos(x, y_center, z_center);
 
@@ -671,22 +748,97 @@ int main(int argc, char* argv[])
 	}
 
 
+	//////////////////////// 
+	//////////////////////////////////////////////////////////////////////////
+	// invisible front wall
+	//////////////////////////////////////////////////////////////////////////
+	// Create invisible front wall (to block haptic tool, symmetrically opposite BackWall)
+	FrontBlockingWall = new cMesh();
+	world->addChild(FrontBlockingWall);
+	ODEWorld->addChild(FrontBlockingWall);
+	// Size same as BackWall
+	double wallWidth = 3.0;
+	double wallHeight = 3.0;
+	cVector3d frontWallPos(+1.5, 0.0, -1.0 + wallHeight / 2.0);
+	cMatrix3d frontWallRot;
+	frontWallRot.setAxisAngleRotationDeg(0, 1, 0, -90);
+
+	// Create the geometry
+	cCreatePlane(FrontBlockingWall, wallHeight, wallWidth, frontWallPos, frontWallRot);
+
+	// Fully invisible material
+	cMaterial invisibleMat;
+	invisibleMat.setWhite(); // doesn't matter
+	invisibleMat.setTransparencyLevel(1.0);  // 1.0 = fully invisible
+	FrontBlockingWall->setMaterial(invisibleMat);
+	FrontBlockingWall->setUseMaterial(true);
+	FrontBlockingWall->setUseTransparency(true);
+	FrontBlockingWall->setUseTexture(false);
+	FrontBlockingWall->setWireMode(false);
+	FrontBlockingWall->setUseDisplayList(false);
+	FrontBlockingWall->setShowEnabled(false);  // this disables rendering
+
+	// Enable haptic collision only
+	FrontBlockingWall->createAABBCollisionDetector(toolRadius);
+	//////////////////////// PHYSICAL GROUND PLANE ////////////////////////
+
+	// Step 1: Add physical ODE ground (can’t fall through it)
+	cODEGenericBody* ODEGroundPlane = new cODEGenericBody(ODEWorld);
+	ODEGroundPlane->createStaticPlane(
+		cVector3d(0.0, 0.0, -1.0),  // position
+		cVector3d(0.0, 0.0, 1.0));  // normal facing up
+	
+	
+
+	// Step 2: Add matching invisible haptic mesh to block proxy
+	cMesh* GroundBlockingMesh = new cMesh();
+	world->addChild(GroundBlockingMesh);
+	GroundBlockingMesh->computeGlobalPositions(true);
+
+
+	// Create invisible mesh surface
+	double groundZ = -1.0;
+	cCreatePlane(GroundBlockingMesh, groundSize, groundSize, cVector3d(0.0, 0.0, groundZ), cMatrix3d());
+	GroundBlockingMesh->createAABBCollisionDetector(toolRadius * 1.2);
+	GroundBlockingMesh->m_material->setHapticTriangleSides(true, false);
+
+	// Make it invisible but collidable
+	//cMaterial invisibleMat;
+	invisibleMat.setWhite(); // irrelevant
+	invisibleMat.setTransparencyLevel(1.0);
+
+	GroundBlockingMesh->setMaterial(invisibleMat);
+	GroundBlockingMesh->setUseMaterial(true);
+	GroundBlockingMesh->setUseTransparency(true);
+	GroundBlockingMesh->setUseTexture(false);
+	GroundBlockingMesh->setWireMode(false);
+	GroundBlockingMesh->setUseDisplayList(false);
+	GroundBlockingMesh->setShowEnabled(false);
+
+	// Enable haptic collision
+	GroundBlockingMesh->createAABBCollisionDetector(toolRadius);
+
+
+
+
+
+
 
 	//////////////////////////////////////////////////////////////////////////
 	// LeftWall
 	//////////////////////////////////////////////////////////////////////////
 
 	double width_LeftWall = 3.0;   // 横向宽度（X）
-	double height_LeftWall = 1.8;  // 垂直高度（Z）
-	double cellWidth_LeftWall = width_LeftWall / GRID_X;
-	double cellHeight_LeftWall = height_LeftWall / GRID_Y;
+	double height_LeftWall = 3.0;  // 垂直高度（Z）
+	double cellWidth_LeftWall = width_LeftWall / GRID;
+	double cellHeight_LeftWall = height_LeftWall / GRID;
 
 	cMatrix3d rot_LeftWall;
 	rot_LeftWall.setAxisAngleRotationRad(1, 0, 0, cDegToRad(270));  // 向右墙贴上
 
-	for (int i = 0; i < GRID_X; ++i)
+	for (int i = 0; i < GRID; ++i)
 	{
-		for (int j = 0; j < GRID_Y; ++j)
+		for (int j = 0; j < GRID; ++j)
 		{
 			LeftWallBlocks[i][j] = new cMesh();
 			ODEWorld->addChild(LeftWallBlocks[i][j]);
@@ -694,7 +846,7 @@ int main(int argc, char* argv[])
 			// 网格中心位置（根据原位置 cVector3d(0, -1.5, -0.3) 拓展）
 			double x_center = -width_LeftWall / 2.0 + (i + 0.5) * cellWidth_LeftWall;
 			double y = -1.5;  // 靠最左侧
-			double z_center = -0.3 - height_LeftWall / 2.0 + (j + 0.5) * cellHeight_LeftWall;
+			double z_center = -1.0 + (j + 0.5) * cellHeight_LeftWall;
 
 			cVector3d pos(x_center, y, z_center);  // front-right-up
 
@@ -766,16 +918,16 @@ int main(int argc, char* argv[])
 
 
 	double width_RightWall = 3.0;   // 水平宽度（Z方向）
-	double height_RightWall = 1.8;  // 垂直高度（X方向）
-	double cellWidth_RightWall = width_RightWall / GRID_X;
-	double cellHeight_RightWall = height_RightWall / GRID_Y;
+	double height_RightWall = 3.0;  // 垂直高度（X方向）
+	double cellWidth_RightWall = width_RightWall / GRID;
+	double cellHeight_RightWall = height_RightWall / GRID;
 
 	cMatrix3d rot_RightWall;
 	rot_RightWall.setAxisAngleRotationRad(1, 0, 0, cDegToRad(90));  // 朝左方向
 
-	for (int i = 0; i < GRID_X; ++i)
+	for (int i = 0; i < GRID; ++i)
 	{
-		for (int j = 0; j < GRID_Y; ++j)
+		for (int j = 0; j < GRID; ++j)
 		{
 			RightWallBlocks[i][j] = new cMesh();
 			ODEWorld->addChild(RightWallBlocks[i][j]);
@@ -783,7 +935,7 @@ int main(int argc, char* argv[])
 			// 每格的位置计算
 			double x_center = -width_RightWall / 2.0 + (i + 0.5) * cellWidth_RightWall;
 			double y = 1.5;  // Y 为固定值（靠右侧）x
-			double z_center = -0.3 - height_RightWall / 2.0 + (j + 0.5) *cellHeight_RightWall;
+			double z_center = -1.0 + (j + 0.5) * cellHeight_RightWall;
 
 			cVector3d pos(x_center, y, z_center);
 
@@ -854,7 +1006,7 @@ void keySelect(unsigned char key, int x, int y)
 		}
 		else
 		{
-			ODEWorld->setGravity(cVector3d(0.0, 0.0, -59.81));
+			ODEWorld->setGravity(cVector3d(0.0, 0.0, -9.81));
 		}
 	}
 
@@ -875,6 +1027,38 @@ void keySelect(unsigned char key, int x, int y)
 		{
 			glutFullScreen();
 			fullscreen = true;
+		}
+	}
+	// Start game
+	if (key == ' ')
+	{
+		if (!gameStarted)
+		{
+			gameStarted = true;
+			gameRunning = true;
+			gameTimeRemaining = 60.0;
+			labelInfo->setText("Game Started!");
+		}
+	}
+
+	// Restart game
+	if (key == 'r')
+	{
+		gameStarted = false;
+		gameRunning = false;
+		gameTimeRemaining = 60.0;
+		labelInfo->setText("Press SPACE to start!");
+
+		// Reset all painted blocks to original (transparent or gray)
+		for (int m = 0; m < GRID; ++m)
+		{
+			for (int n = 0; n < GRID; ++n)
+			{
+				GroundBlocks[m][n]->m_material->setBlue();
+				BackWallBlocks[m][n]->m_material->setGrayGainsboro();
+				LeftWallBlocks[m][n]->m_material->setGrayGainsboro();
+				RightWallBlocks[m][n]->m_material->setGrayGainsboro();
+			}
 		}
 	}
 
@@ -944,40 +1128,6 @@ void graphicsTimer(int data)
 
 	glutTimerFunc(50, graphicsTimer, 0);
 }
-
-void updateGraphics(void)
-{
-	/////////////////////////////////////////////////////////////////////
-	// UPDATE WIDGETS
-	/////////////////////////////////////////////////////////////////////
-
-	// update haptic rate label
-	labelHapticRate->setText(cStr(frequencyCounter.getFrequency(), 0) + " Hz");
-
-	// update position of label
-	labelHapticRate->setLocalPos((int)(0.5 * (windowW - labelHapticRate->getWidth())), 15);
-
-
-	/////////////////////////////////////////////////////////////////////
-	// RENDER SCENE
-	/////////////////////////////////////////////////////////////////////
-
-	// update shadow maps (if any)
-	world->updateShadowMaps(false, mirroredDisplay);
-
-	// render world
-	camera->renderView(windowW, windowH);
-
-	// swap buffers
-	glutSwapBuffers();
-
-	// wait until all GL commands are completed
-	glFinish();
-
-	// check for any OpenGL errors
-	GLenum err = glGetError();
-	if (err != GL_NO_ERROR) printf("Error:  %s\n", gluErrorString(err));
-}
 int calculateScore()
 {
 	int score = 0;
@@ -1006,6 +1156,49 @@ int calculateScore()
 	return score;
 }
 
+void updateGraphics(void)
+{
+	/////////////////////////////////////////////////////////////////////
+	// UPDATE WIDGETS
+	/////////////////////////////////////////////////////////////////////
+
+	// update haptic rate label
+	labelHapticRate->setText(cStr(frequencyCounter.getFrequency(), 0) + " Hz");
+
+	// update position of label
+	labelHapticRate->setLocalPos((int)(0.5 * (windowW - labelHapticRate->getWidth())), 15);
+
+	labelScore->setText("Score: " + std::to_string(calculateScore()));
+	labelScore->setLocalPos(20, 60);
+
+	//labelTimer->setText("Time: " + std::to_string((int)gameTimeRemaining) + "s");
+	int timeSeconds = static_cast<int>(floor(gameTimeRemaining));
+	labelTimer->setText("Time: " + std::to_string(timeSeconds) + "s");
+	labelTimer->setLocalPos(20, 35);
+
+	labelInfo->setLocalPos(20, 10);
+
+	/////////////////////////////////////////////////////////////////////
+	// RENDER SCENE
+	/////////////////////////////////////////////////////////////////////
+
+	// update shadow maps (if any)
+	world->updateShadowMaps(false, mirroredDisplay);
+
+	// render world
+	camera->renderView(windowW, windowH);
+
+	// swap buffers
+	glutSwapBuffers();
+
+	// wait until all GL commands are completed
+	glFinish();
+
+	// check for any OpenGL errors
+	GLenum err = glGetError();
+	if (err != GL_NO_ERROR) printf("Error:  %s\n", gluErrorString(err));
+}
+
 enum cMode
 {
 	IDLE,
@@ -1025,6 +1218,8 @@ void updateHaptics(void)
 	// reset clock
 	cPrecisionClock clock;
 	clock.reset();
+	cPrecisionClock gameClock;
+	gameClock.start();
 
 	// main haptic simulation loop
 	while (simulationRunning)
@@ -1036,8 +1231,9 @@ void updateHaptics(void)
 		// stop the simulation clock
 		clock.stop();
 
-		// read the time increment in seconds
-		double timeInterval = cClamp(clock.getCurrentTimeSeconds(), 0.0001, 0.001);
+		double timeInterval = gameClock.getCurrentTimeSeconds();
+		gameClock.reset();
+		gameClock.start();
 
 		// restart the simulation clock
 		clock.reset();
@@ -1046,14 +1242,25 @@ void updateHaptics(void)
 		// update frequency counter
 		frequencyCounter.signal(1);
 
-		static int lastScore = -1;  // 初始值设为非法分数
+		static int lastScore = -1;
 
-		int currentScore = calculateScore();
-
-		if (currentScore != lastScore)
+		if (gameRunning)
 		{
-			printf("Score: %d\n", currentScore);
-			lastScore = currentScore;
+			// Update timer
+			gameTimeRemaining -= timeInterval;
+			if (gameTimeRemaining <= 0.0)
+			{
+				gameTimeRemaining = 0.0;
+				gameRunning = false;
+				labelInfo->setText("Time's up! Press R to restart.");
+			}
+
+			// Update score
+			int currentScore = calculateScore();
+			if (currentScore != lastScore)
+			{
+				lastScore = currentScore;
+			}
 		}
 
 
@@ -1075,7 +1282,7 @@ void updateHaptics(void)
 			//------------------------------------------------------------
 			cVector3d velocity;
 			hapticDevice[i]->getLinearVelocity(velocity);
-			cVector3d dampingForce = -0.8 * velocity;
+			cVector3d dampingForce =  -4.0 * velocity;          //-0.8 * velocity;
 			tool[i]->addDeviceGlobalForce(dampingForce);
 
 			//------------------------------------------------------------
@@ -1130,9 +1337,9 @@ void updateHaptics(void)
 							continue;
 						}
 
-						// ====== NEW: Stable spring-damper grabbing ======
-						double K = 0.8;  // spring stiffness
-						double D = 0.3;  // damping factor
+						// ======
+						double K = 2;  // spring stiffness
+						double D = 0.5;  // damping factor
 
 						cVector3d springForce = K * (posB - posA);
 
@@ -1230,40 +1437,43 @@ void updateHaptics(void)
 										//CeilingBlocks[m][n]->m_material->setBlue();    // 玩家2触碰 → 恢复
 								//}
 								//else if (object == GroundBlocks[m][n])
-								if (object == GroundBlocks[m][n])
+								if (gameRunning)
 								{
-									if (p == 0)
-										GroundBlocks[m][n]->m_material->setRed();
-									else if (p == 1)
-										GroundBlocks[m][n]->m_material->setBlue();
-								}
-								else if (object == BackWallBlocks[m][n])
-								{
-									if (p == 0)
-										BackWallBlocks[m][n]->m_material->setRed();
-									else if (p == 1)
-										BackWallBlocks[m][n]->m_material->setGrayGainsboro();
-								}
-								else if (object == LeftWallBlocks[m][n])
-								{
-									if (p == 0)
-										LeftWallBlocks[m][n]->m_material->setRed();
-									else if (p == 1)
-										LeftWallBlocks[m][n]->m_material->setGrayGainsboro();
-								}
-								else if (object == RightWallBlocks[m][n])
-								{
-									if (p == 0)
-										RightWallBlocks[m][n]->m_material->setRed();
-									else if (p == 1)
-										RightWallBlocks[m][n]->m_material->setGrayGainsboro();
+									if (object == GroundBlocks[m][n])
+									{
+										if (p == 0)
+											GroundBlocks[m][n]->m_material->setRed();
+										else if (p == 1)
+											GroundBlocks[m][n]->m_material->setBlue();
+									}
+									else if (object == BackWallBlocks[m][n])
+									{
+										if (p == 0)
+											BackWallBlocks[m][n]->m_material->setRed();
+										else if (p == 1)
+											BackWallBlocks[m][n]->m_material->setGrayGainsboro();
+									}
+									else if (object == LeftWallBlocks[m][n])
+									{
+										if (p == 0)
+											LeftWallBlocks[m][n]->m_material->setRed();
+										else if (p == 1)
+											LeftWallBlocks[m][n]->m_material->setGrayGainsboro();
+									}
+									else if (object == RightWallBlocks[m][n])
+									{
+										if (p == 0)
+											RightWallBlocks[m][n]->m_material->setRed();
+										else if (p == 1)
+											RightWallBlocks[m][n]->m_material->setGrayGainsboro();
+									}
 								}
 							}
 						}
 					}
 
 
-					// ✅ 对 ODE 对象施加力反馈
+					//  对 ODE 对象施加力反馈
 					/*if (ODEobject != NULL)
 					{
 					ODEobject->addExternalForceAtPoint(
@@ -1271,7 +1481,7 @@ void updateHaptics(void)
 					collisionEvent->m_globalPos
 					);
 					}*/
-					// ✅ 只在未抓取状态下轻推 cube，避免和 grasp 冲突
+					//  只在未抓取状态下轻推 cube，避免和 grasp 冲突
 					if (ODEobject != nullptr && !graspActive[p]) {
 						ODEobject->addExternalForceAtPoint(
 							-0.3 * interactionPoint->getLastComputedForce(),
