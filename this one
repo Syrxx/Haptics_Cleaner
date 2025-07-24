@@ -1,0 +1,1169 @@
+#include "chai3d.h"
+#include "CODE.h"
+
+#include <algorithm>
+#include <sstream>
+#include <iomanip>
+#include <cmath>
+
+#ifndef MACOSX
+#include "GL/glut.h"
+#else
+#include "GLUT/glut.h"
+#endif
+
+using namespace chai3d;
+using namespace std;
+
+//------------------------------------------------------------------------------
+// Stereo / window flags
+//------------------------------------------------------------------------------
+cStereoMode stereoMode = C_STEREO_DISABLED;
+bool fullscreen = false;
+bool mirroredDisplay = false;
+
+//------------------------------------------------------------------------------
+// CHAI3D core pointers
+//------------------------------------------------------------------------------
+cWorld*       world = nullptr;
+cCamera*      camera = nullptr;
+cSpotLight*   light = nullptr;
+
+// Haptics
+cHapticDeviceHandler* handler = nullptr;
+shared_ptr<cGenericHapticDevice> hapticDevice[2];
+cToolCursor* tool[2] = { nullptr, nullptr };
+double workspaceScaleFactor[2] = { 1.0, 1.0 };
+double maxStiffness[2] = { 0.0, 0.0 };
+
+//------------------------------------------------------------------------------
+// Paintable walls + ground
+//------------------------------------------------------------------------------
+struct PaintWall
+{
+	cMesh* mesh = nullptr;              // visual mesh
+	cTexture2dPtr texture;              // texture we paint into
+	cImagePtr originalImage;            // backup for clearing
+	double brushScale = 1.0;
+	double pixelToWorldScale = 1.0;
+};
+// Timer
+cPrecisionClock gameClock;
+bool gameStarted = false;
+bool gameEnded = false;
+double gameDuration = 20.0; // seconds
+
+//ultimate
+bool ultimateReady = false;
+bool ultimateUsed = false;
+bool ultimateActive = false;
+
+cPrecisionClock ultimateTimer;
+double ultimateDuration = gameDuration / 2;
+bool mirrorControls = true;
+cLabel* labelUltimate = nullptr;
+
+
+
+
+
+
+
+cFont* font = NEW_CFONTCALIBRI20();
+
+// UI Labels
+cLabel* labelTimer;
+cLabel* labelStartMessage;
+cLabel* labelWinnerMessage;
+
+
+PaintWall groundWall;   // not paintable
+PaintWall backWall;     // paintable
+PaintWall leftWall;     // paintable
+PaintWall rightWall;    // paintable
+
+cMesh* frontBlockingWall = nullptr;   // invisible
+cMesh* ceilingBlockingWall = nullptr;   // invisible
+// Camera spherical coordinates
+double camAzimuthDeg = 0.0;
+double camPolarDeg = 90.0;    
+double camRadius = 3.0;
+//------------------------------------------------------------------------------
+// ODE world & dynamic objects
+//------------------------------------------------------------------------------
+cODEWorld* ODEWorld = nullptr;
+cODEGenericBody* ODECube[10] = { nullptr, nullptr, nullptr };
+//HanOi tower
+cODEGenericBody* hanoiRings[5];
+cMesh* hanoiRingMeshes[5];
+cMesh* hanoiBase;
+cMesh* hanoiRods[3];
+
+
+
+// For grasping logic
+const int NUM_TOOLS = 2;
+
+bool isGrasping[NUM_TOOLS] = { false, false };
+cODEGenericBody* graspObject[NUM_TOOLS] = { nullptr, nullptr };
+cVector3d graspOffset[NUM_TOOLS];
+
+cShapeLine* graspLine[NUM_TOOLS] = { nullptr, nullptr };
+double graspSpringStiffness = 10.0;
+
+
+//------------------------------------------------------------------------------
+// Widgets
+//------------------------------------------------------------------------------
+cLabel* labelHapticRate = nullptr;
+//grabbing
+// --- For grabbing state ---
+enum cMode { IDLE, SELECTION };
+cMode state[2] = { IDLE, IDLE };
+cGenericObject* selectedObject[2] = { nullptr, nullptr };
+cTransform tool_T_object[2];
+
+//------------------------------------------------------------------------------
+// Misc state
+//------------------------------------------------------------------------------
+bool simulationRunning = false;
+bool simulationFinished = true;
+cFrequencyCounter frequencyCounter;
+
+// Screen
+int screenW, screenH, windowW, windowH, windowPosX, windowPosY;
+int mouseX = 0, mouseY = 0;
+
+// Paths --------------------------------------------------------------------
+string resourceRoot;
+#define RESOURCE_PATH(p)    (char*)((resourceRoot+string(p)).c_str())
+
+static const string PATH_CANVAS = R"(D:\chai3d-3.1.1-VisualStudio\chai3d-3.1.1\bin\resources\images\canvas.jpg)";
+static const string PATH_STONE = R"(D:\chai3d-3.1.1-VisualStudio\chai3d-3.1.1\bin\resources\images\brick-color.png)";
+static const string PATH_FOAM = R"(D:\chai3d-3.1.1-VisualStudio\chai3d-3.1.1\bin\resources\images\whitefoam.jpg)";
+static const string PATH_FLOOR = R"(D:\chai3d-3.1.1-VisualStudio\chai3d-3.1.1\bin\resources\images\lines.png)";
+
+// Painting constants
+const double K_INK = 30.0;
+const double K_SIZE = 10.0;
+const int    BRUSH_SIZE = 25;
+
+// Per tool color
+cColorb toolPaintColor[2] = { cColorb(0, 120, 255), cColorb(1, 1, 1) };
+
+// Forward declarations
+void resizeWindow(int w, int h);
+void keySelect(unsigned char key, int x, int y);
+void mouseClick(int button, int state, int x, int y);
+void mouseMove(int x, int y);
+void updateGraphics(void);
+void graphicsTimer(int data);
+void closeApp(void);
+void updateHaptics(void);
+void mouseButton(int button, int state, int x, int y);
+
+// Helpers
+static cMesh* createPlane(double sx, double sy, const cVector3d& pos, const cMatrix3d& rot,
+	const cColorf& color, bool textured = false,
+	cTexture2dPtr tex = nullptr, bool hapticSides = true,
+	double stiff = 0.9, double sFric = 0.2, double dFric = 0.4,
+	double texLevel = 20)
+{
+	cMesh* m = new cMesh();
+	cCreatePlane(m, sx, sy, pos, rot);
+	m->setUseMaterial(true);
+	m->setUseMaterial(true);
+	m->m_material = cMaterial::create();
+	m->m_material->setColor(cColorf(1.0, 1.0, 1.0));
+
+	m->m_material->setStiffness(stiff);
+	m->m_material->setStaticFriction(sFric);
+	m->m_material->setDynamicFriction(dFric);
+	m->m_material->setTextureLevel(texLevel);
+	m->m_material->setViscosity(0.15);
+	m->m_material->setHapticTriangleSides(hapticSides, false);
+
+	if (textured && tex)
+	{
+		m->setUseTexture(true);
+		m->setTexture(tex);
+	}
+
+	m->createAABBCollisionDetector(0.05);
+	return m;
+}
+
+
+// for scoring
+int leftWallTotalPixels = 0;
+int rightWallTotalPixels = 0;
+int backWallTotalPixels = 0;
+// Compute how much of the wall has been painted 
+double computePaintCoverage(const PaintWall& w, int total)
+{
+	if (!w.texture || !w.originalImage || total == 0) return 0.0;
+
+	int painted = 0;
+	cColorb current, original;
+
+	int maxX = std::min(w.originalImage->getWidth(), w.texture->m_image->getWidth());
+	int maxY = std::min(w.originalImage->getHeight(), w.texture->m_image->getHeight());
+
+	for (int x = 0; x < maxX; ++x)
+	{
+		for (int y = 0; y < maxY; ++y)
+		{
+			w.originalImage->getPixelColor(x, y, original);
+			w.texture->m_image->getPixelColor(x, y, current);
+
+			if (original.getA() > 0 &&
+				(current.getR() != original.getR() ||
+				current.getG() != original.getG() ||
+				current.getB() != original.getB()))
+			{
+				painted++;
+			}
+		}
+	}
+
+	return 100.0 * painted / total;
+}
+double computeUnpaintedCoverage(const PaintWall& w, int total)
+{
+	if (!w.texture || !w.originalImage || total == 0) return 0.0;
+
+	int untouched = 0;
+	cColorb current, original;
+
+	int maxX = std::min(w.originalImage->getWidth(), w.texture->m_image->getWidth());
+	int maxY = std::min(w.originalImage->getHeight(), w.texture->m_image->getHeight());
+
+	for (int x = 0; x < maxX; ++x)
+	{
+		for (int y = 0; y < maxY; ++y)
+		{
+			w.originalImage->getPixelColor(x, y, original);
+			w.texture->m_image->getPixelColor(x, y, current);
+
+			if (original.getA() > 0 &&
+				current.getR() == original.getR() &&
+				current.getG() == original.getG() &&
+				current.getB() == original.getB())
+			{
+				untouched++;
+			}
+		}
+	}
+
+	return 100.0 * untouched / total;
+}
+
+inline std::string cExtractFileFromPath(const std::string& path)
+{
+	size_t pos = path.find_last_of("/\\");
+	return (pos != std::string::npos) ? path.substr(pos + 1) : path;
+}
+inline bool loadTextureAbsolute(cTexture2dPtr& tex, const string& absPath)
+{
+	bool ok = tex->loadFromFile(absPath);
+#if defined(_MSVC)
+	if (!ok) ok = tex->loadFromFile("./././bin/resources/images/" + cExtractFileFromPath(absPath));
+#endif
+	return ok;
+}
+
+
+void setupPaintWall(PaintWall& w, const string& absImagePath,
+	double kStiff, double kSfric, double kDfric, double texLevel)
+{
+	w.texture = cTexture2d::create();
+	if (!loadTextureAbsolute(w.texture, absImagePath))
+		cout << "Error - failed to load: " << absImagePath << endl;
+
+	w.mesh->setUseTexture(true);
+	w.mesh->setTexture(w.texture);
+
+	w.mesh->m_material->setStiffness(kStiff);
+	w.mesh->m_material->setStaticFriction(kSfric);
+	w.mesh->m_material->setDynamicFriction(kDfric);
+	w.mesh->m_material->setTextureLevel(texLevel);
+	w.mesh->m_material->setHapticTriangleSides(true, false);
+
+	w.texture->m_image->convert(GL_RGBA);
+	w.originalImage = w.texture->m_image->copy();
+
+}
+
+void paintPixels(PaintWall& w, int px, int py, const cColorb& color, double force, double dt)
+{
+	if (!w.texture || !w.texture->m_image) return;
+
+	double size = cClamp((1.8 * K_SIZE * force), 0.0, 1.5 * BRUSH_SIZE);
+
+	for (int x = -BRUSH_SIZE; x<BRUSH_SIZE; ++x)
+	{
+		for (int y = -BRUSH_SIZE; y<BRUSH_SIZE; ++y)
+		{
+			double dist = sqrt((double)(x*x + y*y));
+			if (dist <= size)
+			{
+				cColorb oldCol, newCol;
+				w.texture->m_image->getPixelColor(px + x, py + y, oldCol);
+				double factor = cClamp(K_INK * dt * cClamp(force, 0.0, 10.0) * cClamp(1.0 - dist / size, 0.0, 1.0), 0.0, 1.0);
+				newCol.setR((1.0 - factor) * oldCol.getR() + factor * color.getR());
+				newCol.setG((1.0 - factor) * oldCol.getG() + factor * color.getG());
+				newCol.setB((1.0 - factor) * oldCol.getB() + factor * color.getB());
+				w.texture->m_image->setPixelColor(px + x, py + y, newCol);
+			}
+		}
+	}
+	w.texture->markForUpdate();
+}
+void erasePixels(PaintWall& w, int px, int py, double force, double dt)
+{
+	if (!w.texture || !w.texture->m_image || !w.originalImage) return;
+
+	double size = cClamp((K_SIZE * force), 0.0, (double)BRUSH_SIZE);
+	for (int x = -BRUSH_SIZE; x < BRUSH_SIZE; ++x)
+	{
+		for (int y = -BRUSH_SIZE; y < BRUSH_SIZE; ++y)
+		{
+			double dist = sqrt((double)(x * x + y * y));
+			if (dist <= size)
+			{
+				cColorb restoreCol;
+				w.originalImage->getPixelColor(px + x, py + y, restoreCol);
+				w.texture->m_image->setPixelColor(px + x, py + y, restoreCol);
+			}
+		}
+	}
+	w.texture->markForUpdate();
+}
+
+
+//------------------------------------------------------------------------------
+int main(int argc, char* argv[])
+{
+	resourceRoot = string(argv[0]).substr(0, string(argv[0]).find_last_of("/\\") + 1);
+
+	glutInit(&argc, argv);
+	screenW = glutGet(GLUT_SCREEN_WIDTH);
+	screenH = glutGet(GLUT_SCREEN_HEIGHT);
+	windowW = 0.8 * screenH;
+	windowH = 0.5 * screenH;
+	windowPosY = (screenH - windowH) / 2;
+	windowPosX = windowPosY;
+	glutInitWindowPosition(windowPosX, windowPosY);
+	glutInitWindowSize(windowW, windowH);
+	glutInitDisplayMode(GLUT_RGB | GLUT_DEPTH | GLUT_DOUBLE);
+	glutCreateWindow(argv[0]);
+#ifdef GLEW_VERSION
+	glewInit();
+#endif
+	glutDisplayFunc(updateGraphics);
+	glutKeyboardFunc(keySelect);
+	glutMouseFunc(mouseClick);
+	glutMouseFunc(mouseButton);
+	glutMotionFunc(mouseMove);
+	glutReshapeFunc(resizeWindow);
+	glutSetWindowTitle("CHAI3D Room Paint");
+	if (fullscreen) glutFullScreen();
+
+	world = new cWorld();
+	world->m_backgroundColor.setWhite();
+	camera = new cCamera(world);
+	world->addChild(camera);
+	// Initial camera spherical setup
+	// Initial camera spherical setup
+	camAzimuthDeg = 0.0;
+	camPolarDeg = 90.0;
+	camRadius = 4.0;
+
+	// Apply camera setup manually (same as above)
+	double azimuthRad = cDegToRad(camAzimuthDeg);
+	double polarRad = cDegToRad(camPolarDeg);
+	double x = camRadius * sin(polarRad) * cos(azimuthRad);
+	double y = camRadius * sin(polarRad) * sin(azimuthRad);
+	double z = camRadius * cos(polarRad);
+	camera->setSphericalDeg(3.5, 5.0, 0.0);   // radius, polar, azimuth
+
+
+
+	// Main spotlight - top center
+	light = new cSpotLight(world);
+	world->addChild(light);
+	light->setEnabled(true);
+	light->setLocalPos(0.0, 0.0, 2.0);
+	light->setDir(0.0, 0.0, -1.0);
+	light->setCutOffAngleDeg(60);
+	light->setSpotExponent(2.0);
+	light->setShadowMapEnabled(true);
+	light->m_shadowMap->setQualityMedium();
+	light->m_ambient.set(0.3, 0.3, 0.3);      // soft ambient glow
+	light->m_diffuse.set(1.0, 0.95, 0.8);     // warm lighting
+	light->m_specular.set(1.0, 1.0, 1.0);     // highlights
+
+	// Secondary fill light - soft bluish tint from side
+	cSpotLight* light2 = new cSpotLight(world);
+	world->addChild(light2);
+	light2->setEnabled(true);
+	light2->setLocalPos(-1.5, -1.5, 1.0);
+	light2->setDir(1.0, 1.0, -0.5);
+	light2->setCutOffAngleDeg(90);
+	light2->setSpotExponent(1.5);
+	light2->m_ambient.set(0.1, 0.1, 0.1);     // gentle shadow fill
+	light2->m_diffuse.set(0.5, 0.5, 0.7);     // cool light tone
+	light2->m_specular.set(0.6, 0.6, 0.6);    // soft highlights
+	cSpotLight* light3 = new cSpotLight(world);
+	world->addChild(light3);
+	light3->setEnabled(true);
+	light3->setLocalPos(0.0, 2.0, 1.5);  // behind camera
+	light3->setDir(0.0, -1.0, -0.3);
+	light3->setCutOffAngleDeg(180);
+	light3->setSpotExponent(0.2);
+	light3->m_ambient.set(0.2, 0.2, 0.2);
+	light3->m_diffuse.set(0.3, 0.3, 0.4);
+	light3->m_specular.set(0.1, 0.1, 0.1);
+	// Gentle ambient fill to avoid harsh shadows
+	cDirectionalLight* ambientLight = new cDirectionalLight(world);
+	world->addChild(ambientLight);
+	ambientLight->setEnabled(true);
+	ambientLight->setDir(0.0, 0.0, -1.0);  // Direction doesn't matter much
+	ambientLight->m_ambient.set(0.3, 0.3, 0.3);  // soft overall light
+	ambientLight->m_diffuse.set(0.2, 0.2, 0.2);
+	ambientLight->m_specular.set(0.1, 0.1, 0.1);
+
+	// Timer label (top-right)
+	labelTimer = new cLabel(font);
+	labelTimer->setText("Time: " + cStr(gameDuration, 1) + "s");
+	labelTimer->m_fontColor.setRed();
+	labelTimer->setFontScale(1.5);
+	camera->m_frontLayer->addChild(labelTimer);
+
+
+	// Start message (bottom-center)
+	labelStartMessage = new cLabel(font);
+	labelStartMessage->setText("Press SPACE to start paint challenge");
+	labelStartMessage->m_fontColor.setYellow();
+	labelStartMessage->setFontScale(2.5);
+
+
+	camera->m_frontLayer->addChild(labelStartMessage);
+
+	// Winner message (center screen)
+	labelWinnerMessage = new cLabel(font);
+	labelWinnerMessage->setText("");
+	labelWinnerMessage->m_fontColor.setRed();
+	labelWinnerMessage->setFontScale(2.5);
+	camera->m_frontLayer->addChild(labelWinnerMessage);
+
+
+	handler = new cHapticDeviceHandler();
+// grasp
+	for (int i = 0; i < NUM_TOOLS; ++i)
+	{
+		graspLine[i] = new cShapeLine();
+		graspLine[i]->setShowEnabled(false);
+		graspLine[i]->setLineWidth(2.0);
+		if (i == 0)
+			graspLine[i]->m_colorPointA.setBlue();   
+		else
+			graspLine[i]->m_colorPointA.setRed();  
+
+		graspLine[i]->m_colorPointB = graspLine[i]->m_colorPointA; 
+		world->addChild(graspLine[i]);
+	}
+
+	int numDevices = 2;
+	double toolRadius = 0.05;
+
+	for (int i = 0; i<numDevices; ++i)
+	{
+		handler->getDevice(hapticDevice[i], i);
+		if (!hapticDevice[i]) continue;
+		tool[i] = new cToolCursor(world);
+		tool[i]->setHapticDevice(hapticDevice[i]);
+		tool[i]->enableDynamicObjects(true);
+		tool[i]->setWorkspaceRadius(3.0);
+		tool[i]->setRadius(toolRadius, toolRadius);
+		tool[i]->setShowContactPoints(true, false);
+		hapticDevice[i]->setEnableGripperUserSwitch(true);
+		tool[i]->setLocalRot(camera->getLocalRot());
+		tool[i]->setWaitForSmallForce(true);
+		tool[i]->start();
+		tool[i]->m_hapticPoint->m_sphereProxy->m_material->setColor(toolPaintColor[i]);
+		workspaceScaleFactor[i] = tool[i]->getWorkspaceScaleFactor();
+		maxStiffness[i] = hapticDevice[i]->getSpecifications().m_maxLinearStiffness / workspaceScaleFactor[i];
+		
+
+		world->addChild(tool[i]);
+	}
+
+	ODEWorld = new cODEWorld(world);
+	world->addChild(ODEWorld);
+	ODEWorld->setGravity(cVector3d(0, 0, -9.81));
+	ODEWorld->setLinearDamping(0.05);
+	ODEWorld->setAngularDamping(0.05);
+
+	const double ROOM_W = 3.0, ROOM_D = 3.0, ROOM_H = 3.0;
+	const double HALF_W = ROOM_W*0.5, HALF_D = ROOM_D*0.5, FLOOR_Z = -1.0;
+
+	cTexture2dPtr floorTex = cTexture2d::create();
+	loadTextureAbsolute(floorTex, PATH_FLOOR);
+	groundWall.mesh = createPlane(ROOM_W, ROOM_D, cVector3d(0, 0, FLOOR_Z), cMatrix3d(), cColorf(1, 1, 1), true, floorTex, true, 0.4*maxStiffness[0], 0.2, 0.2, 0.2);
+	groundWall.mesh->setHapticEnabled(false);
+
+
+
+	// Back wallcCreatePlane(
+	cMatrix3d rotBack;  rotBack.setAxisAngleRotationDeg(0, 1, 0, 90);
+	backWall.mesh = createPlane(ROOM_H, ROOM_D,
+		cVector3d(-HALF_W, 0, FLOOR_Z + ROOM_H * 0.5), rotBack, cColorf(1, 1, 1));
+	world->addChild(backWall.mesh);
+	setupPaintWall(backWall, PATH_CANVAS, 0.8 * maxStiffness[0], 0.3, 0.2, 1.0);
+	backWall.brushScale = 1.0;  // normal
+
+	// Left wall
+	cMatrix3d rotLeft;  rotLeft.setAxisAngleRotationDeg(1, 0, 0, 270);
+	leftWall.mesh = createPlane(ROOM_W, ROOM_H,
+		cVector3d(0, -HALF_D, FLOOR_Z + ROOM_H * 0.5), rotLeft, cColorf(1, 1, 1));
+	world->addChild(leftWall.mesh); 
+
+	setupPaintWall(leftWall, PATH_FOAM,
+		0.1 * maxStiffness[0],   // very soft
+		0.0,                     // slippery
+		0.3,                     // some sliding
+		0.8);                          ////////////////////////////////////////SCALING DOESNT WORK!! NEEDS TO BE FIXED. SIDE WALLS MORE STRECHED?///////////////////////////////////////////////////////////////////<- TO-DO
+
+
+
+	// BACK WALL Normal Map
+	cNormalMapPtr normalBack = cNormalMap::create();
+	normalBack->createMap(backWall.texture);
+	backWall.mesh->m_normalMap = normalBack;
+	backWall.mesh->m_material->setUseHapticShading(true);
+
+
+
+	// LEFT WALL Normal Map
+	cNormalMapPtr normalLeft = cNormalMap::create();
+	normalLeft->createMap(leftWall.texture);
+	leftWall.mesh->m_normalMap = normalLeft;
+	leftWall.mesh->m_material->setUseHapticShading(true);
+	leftWall.mesh->m_material->setTextureLevel(20.0);
+	
+
+
+	// Right wall
+	cMatrix3d rotRight; rotRight.setAxisAngleRotationDeg(1, 0, 0, 90);
+	rightWall.mesh = createPlane(ROOM_W, ROOM_H,
+		cVector3d(0, HALF_D, FLOOR_Z + ROOM_H * 0.5), rotRight, cColorf(1, 1, 1));
+	world->addChild(rightWall.mesh);
+
+	setupPaintWall(rightWall, PATH_STONE,
+		0.8 * maxStiffness[0],   // strong resistance
+		0.2,                     // some grip
+		0.2,                     // less slide
+		0.8);                    //
+	// RIGHT WALL Normal Map
+	cNormalMapPtr normalRight = cNormalMap::create();
+	normalRight->createMap(rightWall.texture);
+	rightWall.mesh->m_normalMap = normalRight;
+	rightWall.mesh->m_material->setUseHapticShading(true);
+	rightWall.mesh->m_material->setTextureLevel(10.0);
+
+
+	//---------------------------------------------------------------------------
+	// Invisible Blocking Walls: FRONT and CEILING
+	//---------------------------------------------------------------------------
+
+	cMaterial invisibleMat;
+	invisibleMat.setWhite();
+	invisibleMat.setTransparencyLevel(1.0);
+
+	// FRONT BLOCKING WALL
+	cMatrix3d rotFront;
+	rotFront.setAxisAngleRotationDeg(0, 1, 0, -90);
+	frontBlockingWall = new cMesh();
+	cCreatePlane(frontBlockingWall, ROOM_H, ROOM_D,
+		cVector3d(HALF_W, 0, FLOOR_Z + ROOM_H * 0.5), rotFront);
+
+	frontBlockingWall->setMaterial(invisibleMat);
+	frontBlockingWall->setUseMaterial(true);
+	frontBlockingWall->setUseTransparency(true);
+	frontBlockingWall->setShowEnabled(false);
+	frontBlockingWall->createAABBCollisionDetector(0.05);
+	frontBlockingWall->setHapticEnabled(true);
+	frontBlockingWall->m_material->setStiffness(0.6 * maxStiffness[0]);
+	world->addChild(frontBlockingWall);
+
+	// CEILING BLOCKING WALL
+	cMatrix3d rotCeiling;
+	rotCeiling.setAxisAngleRotationDeg(1, 0, 0, 180);
+	ceilingBlockingWall = new cMesh();
+	cCreatePlane(ceilingBlockingWall, ROOM_W, ROOM_D,
+		cVector3d(0, 0, FLOOR_Z + ROOM_H), rotCeiling);
+
+	ceilingBlockingWall->setMaterial(invisibleMat);
+	ceilingBlockingWall->setUseMaterial(true);
+	ceilingBlockingWall->setUseTransparency(true);
+	ceilingBlockingWall->setShowEnabled(false);
+	ceilingBlockingWall->createAABBCollisionDetector(0.05);
+	ceilingBlockingWall->setHapticEnabled(true);
+	ceilingBlockingWall->m_material->setStiffness(0.6 * maxStiffness[0]);
+	world->addChild(ceilingBlockingWall);
+
+	
+
+	// ODE planes
+
+	// Create physics-only ODE floor (for object collisions)
+	cODEGenericBody* odeFloor = new cODEGenericBody(ODEWorld);
+
+	//-------------------------------------------------------
+	////---- FLOOR ---------------------------------------
+	//--------------------------------
+	odeFloor->createStaticPlane(cVector3d(0.0, 0.0, FLOOR_Z), cVector3d(0.0, 0.0, 1.0));
+
+	cMesh* visualFloor = new cMesh();
+	world->addChild(visualFloor);
+
+	double floorSize = 3.0;
+	double floorHeight = 0.0;  // Z = 0 same as ODE floor
+	cVector3d floorPos(0.0, 0.0, FLOOR_Z);
+
+	cMatrix3d floorRot;
+	floorRot.setAxisAngleRotationDeg(1, 0, 0, -0); // Laying flat in XY, facing up
+
+	cCreatePlane(visualFloor, floorSize, floorSize, floorPos, floorRot);
+
+	// Texture
+	cTexture2dPtr texFloor = cTexture2d::create();
+	bool ok = loadTextureAbsolute(texFloor, PATH_FLOOR);
+
+	// Assign texture + enable
+	visualFloor->setUseTexture(true);
+	visualFloor->setTexture(texFloor);
+
+	// Generate normal map
+	cNormalMapPtr floorNormalMap = cNormalMap::create();
+	floorNormalMap->createMap(texFloor);
+	visualFloor->m_normalMap = floorNormalMap;
+
+	// Material propertie
+	visualFloor->m_material->setWhite();
+	visualFloor->m_material->setStiffness(0.5 * maxStiffness[0]);
+	visualFloor->m_material->setStaticFriction(0.2);
+	visualFloor->m_material->setDynamicFriction(0.3);
+	visualFloor->m_material->setTextureLevel(9);
+	visualFloor->m_material->setHapticTriangleSides(true, false);
+	visualFloor->m_material->setUseHapticShading(true);
+	visualFloor->createAABBCollisionDetector(toolRadius);
+	visualFloor->setHapticEnabled(true);
+
+
+
+	for (int i = 0; i<6; ++i) {
+		cODEGenericBody* plane = new cODEGenericBody(ODEWorld);
+		if (i == 0) plane->createStaticPlane(cVector3d(0, 0, FLOOR_Z), cVector3d(0, 0, 1));
+		if (i == 1) plane->createStaticPlane(cVector3d(0, 0, FLOOR_Z + ROOM_H), cVector3d(0, 0, -1));
+		if (i == 2) plane->createStaticPlane(cVector3d(-HALF_W, 0, 0), cVector3d(1, 0, 0));
+		if (i == 3) plane->createStaticPlane(cVector3d(HALF_W, 0, 0), cVector3d(-1, 0, 0));
+		if (i == 4) plane->createStaticPlane(cVector3d(0, -HALF_D, 0), cVector3d(0, 1, 0));
+		if (i == 5) plane->createStaticPlane(cVector3d(0, HALF_D, 0), cVector3d(0, -1, 0));
+	}
+
+	// Boxes
+	for (int i = 0; i<10; ++i) {
+		ODECube[i] = new cODEGenericBody(ODEWorld); cMesh* box = new cMesh(); cCreateBox(box, 0.2, 0.2, 0.2);
+		// Create the box
+		ODECube[i] = new cODEGenericBody(ODEWorld);
+		cCreateBox(box, 0.2, 0.2, 0.2);
+
+		// Create and configure a material
+		cMaterial* boxMaterial = new cMaterial();
+		boxMaterial->setColor(cColorf(0.3 + 0.2 * i, 0.5, 1.0 - 0.3 * i));
+		boxMaterial->setStiffness(0.2 * maxStiffness[0]);
+		boxMaterial->setStaticFriction(0.3);
+		boxMaterial->setDynamicFriction(0.2);
+
+		// Assign material to the box
+		box->setMaterial(*boxMaterial);  // Pass by reference
+
+		// Enable collision
+		box->createAABBCollisionDetector(toolRadius);
+
+		// Add to ODE world
+		ODECube[i]->setImageModel(box);
+		ODECube[i]->createDynamicBox(0.2, 0.2, 0.2);
+		ODECube[i]->setMass(0.02 + 0.01 * i);
+		ODECube[i]->setLocalPos(0.0, -0.4 + 0.4 * i, FLOOR_Z + 0.5);
+
+		box->createAABBCollisionDetector(toolRadius);
+		ODECube[i]->setImageModel(box); ODECube[i]->createDynamicBox(0.2, 0.2, 0.2); ODECube[i]->setMass(0.02 + 0.01*i);
+		ODECube[i]->setLocalPos(0.0, -0.4 + 0.4*i, FLOOR_Z + 0.5);
+	}
+
+
+
+	// Spheres:
+
+	//-------------------------------add objects here---------------
+	//pool balls
+
+
+
+	//---------------------------------------------------------------
+
+	
+
+	labelHapticRate = new cLabel(font); 
+	labelHapticRate->m_fontColor.setBlack(); 
+	camera->m_frontLayer->addChild(labelHapticRate);
+	labelUltimate = new cLabel(font);
+	labelUltimate->m_fontColor.setRed();
+	labelUltimate->setLocalPos(20, 60); // Y = change
+	labelUltimate->setText("PLAYER 1 ULTIMATE READY!");
+	labelUltimate->setShowEnabled(false); // hidden until it's ready
+	camera->m_frontLayer->addChild(labelUltimate);
+
+
+	cThread* hThread = new cThread(); hThread->start(updateHaptics, CTHREAD_PRIORITY_HAPTICS);
+	atexit(closeApp);
+	glutTimerFunc(50, graphicsTimer, 0);
+	glutMainLoop();
+	return 0;
+}
+
+//------------------------------------------------------------------------------
+void resizeWindow(int w, int h){ windowW = w; windowH = h; }
+void keySelect(unsigned char key, int x, int y)
+{
+	if (key == 27 || key == 'x') exit(0);
+	if (key == ' ')
+	{
+		if (!gameStarted)
+		{
+			gameStarted = true;
+			gameEnded = false;
+			gameClock.reset();
+			gameClock.start();
+
+			labelStartMessage->setText("");
+			labelWinnerMessage->setText("");
+
+			// Save fresh state of walls as "original"
+			leftWall.texture->m_image->copyTo(leftWall.originalImage);
+			rightWall.texture->m_image->copyTo(rightWall.originalImage);
+			backWall.texture->m_image->copyTo(backWall.originalImage);
+
+
+			// Count only visible (non-transparent) pixels
+			auto countVisiblePixels = [](const PaintWall& w) -> int {
+				int width = w.originalImage->getWidth();
+				int height = w.originalImage->getHeight();
+				int total = 0;
+				cColorb pixel;
+
+				for (int x = 0; x < width; ++x)
+				{
+					for (int y = 0; y < height; ++y)
+					{
+						w.originalImage->getPixelColor(x, y, pixel);
+						if (pixel.getA() > 0) total++;
+					}
+				}
+				return total;
+			};
+
+			leftWallTotalPixels = countVisiblePixels(leftWall);
+			rightWallTotalPixels = countVisiblePixels(rightWall);
+			backWallTotalPixels = countVisiblePixels(backWall);
+		}
+	}
+	if (key == 'g') ODEWorld->setGravity(ODEWorld->getGravity().length()>0 ? cVector3d(0, 0, 0) : cVector3d(0, 0, -9.81));
+	if (key == 'f') fullscreen ? glutReshapeWindow(windowW, windowH), fullscreen = false : glutFullScreen(), fullscreen = true;
+	if (key == 'm') mirroredDisplay = !mirroredDisplay, camera->setMirrorVertical(mirroredDisplay);
+	if (key == 'c'){
+		backWall.originalImage->copyTo(backWall.texture->m_image);
+		leftWall.originalImage->copyTo(leftWall.texture->m_image);
+		rightWall.originalImage->copyTo(rightWall.texture->m_image);
+		backWall.texture->markForUpdate(); leftWall.texture->markForUpdate(); rightWall.texture->markForUpdate();
+	}
+}
+void updateCameraPosition()
+{
+	double azimuthRad = cDegToRad(camAzimuthDeg);
+	double polarRad = cDegToRad(camPolarDeg);
+
+	double x = camRadius * sin(polarRad) * cos(azimuthRad);
+	double y = camRadius * sin(polarRad) * sin(azimuthRad);
+	double z = camRadius * cos(polarRad);
+
+	cVector3d eye(x, y, z);
+	cVector3d lookAt(0.0, 0.0, 0.0);
+	cVector3d up(0.0, 0.0, 1.0);
+
+	camera->set(eye, lookAt, up);
+}
+
+void mouseClick(int button, int state, int x, int y)
+{
+	if (state == GLUT_DOWN)
+	{
+		if (button == 3) // Scroll up
+		{
+			camRadius -= 0.2;
+		}
+		else if (button == 4) // Scroll down
+		{
+			camRadius += 0.2;
+		}
+
+		// Clamp camera radius (so it doesn’t go too close/far)
+		camRadius = cClamp(camRadius, 1.0, 10.0);
+
+		// Update camera after scroll
+		updateCameraPosition();
+	}
+}
+
+
+void mouseButton(int button, int state, int x, int y)
+{
+	if (button == 3) // Scroll up
+	{
+		camRadius -= 0.1;
+		camRadius = cClamp(camRadius, 1.0, 10.0);  // adjust bounds as needed
+	}
+	else if (button == 4) // Scroll down
+	{
+		camRadius += 0.1;
+		camRadius = cClamp(camRadius, 1.0, 10.0);
+	}
+
+	// Force camera to update immediately
+	double azimuthRad = cDegToRad(camAzimuthDeg);
+	double polarRad = cDegToRad(camPolarDeg);
+	double x_cam = camRadius * sin(polarRad) * cos(azimuthRad);
+	double y_cam = camRadius * sin(polarRad) * sin(azimuthRad);
+	double z_cam = camRadius * cos(polarRad);
+	cVector3d eye(x_cam, y_cam, z_cam);
+	cVector3d lookAt(0.0, 0.0, 0.0);
+	cVector3d up(0.0, 0.0, 1.0);
+	camera->set(eye, lookAt, up);
+}
+
+void mouseMove(int x, int y)
+{
+	int dx = x - mouseX;
+	int dy = y - mouseY;
+	mouseX = x;
+	mouseY = y;
+
+	double sensitivity = 0.03;
+	camAzimuthDeg -= sensitivity * dx;  // horizontal drag -> rotate around
+	camPolarDeg -= sensitivity * dy;  // vertical drag -> look up/down
+
+	// clamp polar angle to avoid flipping
+	camPolarDeg = cClamp(camPolarDeg, 20.0, 160.0);
+
+	// convert to radians
+	double azimuthRad = cDegToRad(camAzimuthDeg);
+	double polarRad = cDegToRad(camPolarDeg);
+
+	// convert spherical to Cartesian camera position
+	double x_cam = camRadius * sin(polarRad) * cos(azimuthRad);
+	double y_cam = camRadius * sin(polarRad) * sin(azimuthRad);
+	double z_cam = camRadius * cos(polarRad);
+
+	cVector3d eye(x_cam, y_cam, z_cam);
+	cVector3d lookAt(0.0, 0.0, 0.0);
+	cVector3d up(0.0, 0.0, 1.0);
+
+	camera->set(eye, lookAt, up);
+
+	for (int i = 0; i < 2; ++i)
+	if (tool[i]) tool[i]->setLocalRot(camera->getLocalRot());
+}
+
+
+
+void closeApp(void){ simulationRunning = false; while (!simulationFinished) cSleepMs(100); for (int i = 0; i<2; ++i) if (tool[i]) tool[i]->stop(); }
+void graphicsTimer(int d){ if (simulationRunning) glutPostRedisplay(); glutTimerFunc(50, graphicsTimer, 0); }
+
+
+void computeAndShowWinner()
+{
+	// Player 1: Total painted % on all 3 walls
+	double p1 = computePaintCoverage(leftWall, leftWallTotalPixels)
+		+ computePaintCoverage(rightWall, rightWallTotalPixels)
+		+ computePaintCoverage(backWall, backWallTotalPixels);
+
+	// Player 2: Total unpainted % on all 3 walls
+	double p2 = computeUnpaintedCoverage(leftWall, leftWallTotalPixels)
+		+ computeUnpaintedCoverage(rightWall, rightWallTotalPixels)
+		+ computeUnpaintedCoverage(backWall, backWallTotalPixels);
+
+	// Decide winner
+	string winner;
+	if (p1 > p2)
+		winner = "Player 1 Wins!";
+	else if (p2 > p1)
+		winner = "Player 2 Wins!";
+	else
+		winner = "It's a Tie!";
+
+	// Display label on screen
+	labelWinnerMessage->setText(winner);
+	int xMid = (windowW - labelWinnerMessage->getWidth()) / 2;
+	int yMid = (windowH - labelWinnerMessage->getHeight()) / 2;
+	labelWinnerMessage->setLocalPos(xMid, yMid);
+
+	// Console printout
+	cout << "\n====== FINAL SCORES ======\n";
+	cout << "P1 (Left + Right Painted):  " << p1 << " %\n";
+	cout << "P2 (All Walls Untouched):   " << p2 << " %\n";
+	cout << "Winner: " << winner << endl;
+}
+
+
+
+
+void updateGraphics(void)
+{
+	// Update haptic rate
+	labelHapticRate->setText(cStr(frequencyCounter.getFrequency(), 0) + " Hz");
+	labelHapticRate->setLocalPos((int)(0.5*(windowW - labelHapticRate->getWidth())), 15);
+
+	// Render
+	world->updateShadowMaps(false, mirroredDisplay);
+	camera->renderView(windowW, windowH);
+	glutSwapBuffers();
+	glFinish();
+	GLenum err = glGetError();
+	if (err != GL_NO_ERROR)
+		printf("Error: %s\n", gluErrorString(err));
+
+	// In-game logic
+	if (gameStarted && !gameEnded)
+	{
+		double timeLeft = gameDuration - gameClock.getCurrentTimeSeconds();
+		timeLeft = cClamp(timeLeft, 0.0, gameDuration);
+
+		// Update timer label (top-right)
+		stringstream ss;
+		ss << "Time: " << fixed << setprecision(1) << timeLeft << "s";
+		labelTimer->setText(ss.str());
+		labelTimer->setLocalPos(windowW - labelTimer->getWidth() - 20, windowH - labelTimer->getHeight() - 20);
+
+		labelStartMessage->setLocalPos(20, windowH - labelStartMessage->getHeight() - 20);
+
+		if (timeLeft <= 0.0)
+		{
+			gameEnded = true;              // Prevent future updates
+			computeAndShowWinner();       // Run winner logic once
+		}
+	}
+	else if (!gameStarted && !gameEnded)
+	{
+		labelTimer->setText("Time: " + cStr(gameDuration, 1) + "s");
+		labelTimer->setLocalPos(windowW - labelTimer->getWidth() - 20, windowH - labelTimer->getHeight() - 20);
+		labelStartMessage->setLocalPos(20, windowH - labelStartMessage->getHeight() - 20);
+	}
+
+
+
+
+	if (labelUltimate)
+	{
+		if (ultimateReady && !ultimateUsed)
+		{
+			labelUltimate->setShowEnabled(true);
+			labelUltimate->setText("PLAYER 1 ULTIMATE READY!");
+		}
+		else if (ultimateUsed && !ultimateActive)
+		{
+			labelUltimate->setShowEnabled(true);
+			labelUltimate->setText("ULTIMATE USED");
+		}
+		else if (ultimateActive)
+		{
+			labelUltimate->setShowEnabled(true);
+			labelUltimate->setText("ULTIMATE ACTIVE!");
+		}
+		else
+		{
+			labelUltimate->setShowEnabled(false);
+		}
+	}
+
+
+}
+
+
+
+void updateHaptics(void)
+{
+	simulationRunning = true;
+	simulationFinished = false;
+
+	cPrecisionClock clock;
+	clock.reset();
+
+	while (simulationRunning)
+	{
+		clock.stop();
+		double dt = clock.getCurrentTimeSeconds();
+		double elapsedTime = gameClock.getCurrentTimeSeconds();
+		if (!ultimateReady && elapsedTime >= gameDuration / 2.0) {
+			ultimateReady = true;
+			cout << "ULTIMATE READY!" << endl;
+		}
+		clock.reset();
+		clock.start();
+
+		world->computeGlobalPositions(true);
+
+		for (int i = 0; i < 2; ++i)
+		{
+			if (!tool[i]) continue;
+
+			// --- tool update ---
+			tool[i]->updateFromDevice();
+			tool[i]->computeInteractionForces();
+
+			// light damping
+			cVector3d v;
+			hapticDevice[i]->getLinearVelocity(v);
+			tool[i]->addDeviceGlobalForce(-4.0 * v);
+
+			cHapticPoint* hp = tool[i]->getHapticPoint(0);
+
+	
+
+			//------------------------------------------------------------------
+			// GRAB LOGIC 
+			//------------------------------------------------------------------
+			cVector3d toolPos = tool[i]->getDeviceGlobalPos();
+			bool buttonPressed = false;
+			hapticDevice[i]->getUserSwitch(0, buttonPressed);
+			if (i == 0) {
+				//  Ultimate activation (PLAYER 1 presses button 1, n haptic dvice ideaally)
+				bool ultButtonPressed = false;
+				hapticDevice[0]->getUserSwitch(1, ultButtonPressed);
+
+				if (ultimateReady && !ultimateUsed && ultButtonPressed) {
+					ultimateUsed = true;
+					ultimateActive = true;
+					ultimateTimer.reset();
+					ultimateTimer.start();
+					cout << "ULTIMATE ACTIVATED!" << endl;
+				}
+			}
+
+			if (!isGrasping[i] && buttonPressed)
+			{
+				if (hp && hp->getNumCollisionEvents() > 0)
+				{
+					cCollisionEvent* ev = hp->getCollisionEvent(0);
+					cGenericObject* obj = ev->m_object->getOwner()->getOwner();
+					cODEGenericBody* body = dynamic_cast<cODEGenericBody*>(obj);
+					if (body)
+					{
+						isGrasping[i] = true;
+						graspObject[i] = body;
+						graspOffset[i] = ev->m_globalPos - body->getGlobalPos();
+						graspLine[i]->setShowEnabled(true);
+					}
+				}
+			}
+			else if (isGrasping[i] && buttonPressed && graspObject[i])
+			{
+				cVector3d targetPos = toolPos - graspOffset[i];
+				cVector3d currentPos = graspObject[i]->getGlobalPos();
+				cVector3d f = graspSpringStiffness * (targetPos - currentPos);
+
+				graspObject[i]->addExternalForceAtPoint(f, currentPos);
+				tool[i]->addDeviceGlobalForce(-f);
+
+				graspLine[i]->m_pointA = toolPos;
+				graspLine[i]->m_pointB = currentPos;
+			}
+			else if (isGrasping[i] && !buttonPressed)
+			{
+				isGrasping[i] = false;
+				graspObject[i] = nullptr;
+				graspLine[i]->setShowEnabled(false);
+			}
+
+
+
+			if (ultimateActive) {
+				double ultimateTime = ultimateTimer.getCurrentTimeSeconds();
+				if (ultimateTime > ultimateDuration) {
+					ultimateActive = false;
+					cout << "Ultimate effect ended." << endl;
+				}
+				else {
+					// SLOW Player 2 down
+					tool[1]->setWorkspaceScaleFactor(0.6);
+				}
+			}
+			else {
+				tool[1]->setWorkspaceScaleFactor(1.0);  // Normal movement
+			}
+
+
+			//------------------------------------------------------------------
+			// PAINTING / ERASING
+			//------------------------------------------------------------------
+			if (hp && hp->getNumCollisionEvents() > 0)
+			{
+				cCollisionEvent* contact = hp->getCollisionEvent(0);
+				PaintWall* w = nullptr;
+				if (contact->m_object == backWall.mesh)  w = &backWall;
+				else if (contact->m_object == leftWall.mesh)  w = &leftWall;
+				else if (contact->m_object == rightWall.mesh) w = &rightWall;
+
+				if (w)
+				{
+					unsigned tri = contact->m_index;
+					cVector3d tex = contact->m_triangles->getTexCoordAtPosition(tri, contact->m_localPos);
+
+					int px, py;
+					w->texture->m_image->getPixelLocation(tex, px, py);
+
+					double forceMag = tool[i]->getDeviceGlobalForce().length();
+
+					// Determine tool action
+					if (i == 0)
+					{
+						// Player 1 paints
+						paintPixels(*w, px, py, toolPaintColor[i], forceMag, dt);
+					}
+					else if (i == 1)
+					{
+						// Player 2 erases: restore original canvas texture
+						erasePixels(*w, px, py, forceMag, dt);
+					}
+				}
+			}
+
+
+			// send forces to device
+			tool[i]->applyToDevice();
+		}
+
+
+
+		// physics
+		ODEWorld->updateDynamics(dt);
+
+		// hz counter
+		frequencyCounter.signal(1);
+	}
+
+	simulationFinished = true;
+
+}
