@@ -1,3 +1,8 @@
+//add magnetic spheres
+//add score percentege (correct it) to gui
+//ad restart button
+//add ult that make spheres faster
+
 #include "chai3d.h"
 #include "CODE.h"
 
@@ -47,11 +52,17 @@ struct PaintWall
 	double brushScale = 1.0;
 	double pixelToWorldScale = 1.0;
 };
+
 // Timer
 cPrecisionClock gameClock;
 bool gameStarted = false;
 bool gameEnded = false;
-double gameDuration = 20.0; // seconds
+double gameDuration = 60.0; // seconds        ----------------------
+bool countdownRunning = false;
+double countdownStartTime = 0.0;
+double countdownDuration = 3.0; // 3 seconds
+cPrecisionClock brushClock;
+
 
 //ultimate
 bool ultimateReady = false;
@@ -62,7 +73,7 @@ cPrecisionClock ultimateTimer;
 double ultimateDuration = gameDuration / 2;
 bool mirrorControls = true;
 cLabel* labelUltimate = nullptr;
-
+bool floatingMode = false;
 
 
 
@@ -75,6 +86,8 @@ cFont* font = NEW_CFONTCALIBRI20();
 cLabel* labelTimer;
 cLabel* labelStartMessage;
 cLabel* labelWinnerMessage;
+cLabel* labelScore = nullptr;
+
 
 
 PaintWall groundWall;   // not paintable
@@ -86,7 +99,7 @@ cMesh* frontBlockingWall = nullptr;   // invisible
 cMesh* ceilingBlockingWall = nullptr;   // invisible
 // Camera spherical coordinates
 double camAzimuthDeg = 0.0;
-double camPolarDeg = 90.0;    
+double camPolarDeg = 90.0;
 double camRadius = 3.0;
 //------------------------------------------------------------------------------
 // ODE world & dynamic objects
@@ -99,7 +112,7 @@ cMesh* hanoiRingMeshes[5];
 cMesh* hanoiBase;
 cMesh* hanoiRods[3];
 
-
+//---------------------------------------------------------------------------------to do
 
 // For grasping logic
 const int NUM_TOOLS = 2;
@@ -128,6 +141,9 @@ cTransform tool_T_object[2];
 //------------------------------------------------------------------------------
 bool simulationRunning = false;
 bool simulationFinished = true;
+bool countdownFinished = false;
+
+
 cFrequencyCounter frequencyCounter;
 
 // Screen
@@ -148,8 +164,29 @@ const double K_INK = 30.0;
 const double K_SIZE = 10.0;
 const int    BRUSH_SIZE = 25;
 
-// Per tool color
-cColorb toolPaintColor[2] = { cColorb(0, 120, 255), cColorb(1, 1, 1) };
+cColorb getDynamicToolColor(int toolIndex)
+{
+	double t = brushClock.getCurrentTimeSeconds();
+	double hue = fmod((t * 60.0) + toolIndex * 180.0, 360.0); // Offset hues for each player
+
+	double s = 1.0;
+	double v = 1.0;
+	double c = v * s;
+	double x = c * (1 - fabs(fmod(hue / 60.0, 2) - 1));
+	double m = v - c;
+
+	double r = 0, g = 0, b = 0;
+
+	if (hue < 60)      { r = c; g = x; b = 0; }
+	else if (hue < 120){ r = x; g = c; b = 0; }
+	else if (hue < 180){ r = 0; g = c; b = x; }
+	else if (hue < 240){ r = 0; g = x; b = c; }
+	else if (hue < 300){ r = x; g = 0; b = c; }
+	else               { r = c; g = 0; b = x; }
+
+	return cColorb((r + m) * 255, (g + m) * 255, (b + m) * 255);
+}
+
 
 // Forward declarations
 void resizeWindow(int w, int h);
@@ -257,7 +294,6 @@ double computeUnpaintedCoverage(const PaintWall& w, int total)
 
 	return 100.0 * untouched / total;
 }
-
 inline std::string cExtractFileFromPath(const std::string& path)
 {
 	size_t pos = path.find_last_of("/\\");
@@ -272,6 +308,15 @@ inline bool loadTextureAbsolute(cTexture2dPtr& tex, const string& absPath)
 	return ok;
 }
 
+void clearWalls()
+{
+	backWall.originalImage->copyTo(backWall.texture->m_image);
+	leftWall.originalImage->copyTo(leftWall.texture->m_image);
+	rightWall.originalImage->copyTo(rightWall.texture->m_image);
+	backWall.texture->markForUpdate();
+	leftWall.texture->markForUpdate();
+	rightWall.texture->markForUpdate();
+}
 
 void setupPaintWall(PaintWall& w, const string& absImagePath,
 	double kStiff, double kSfric, double kDfric, double texLevel)
@@ -341,10 +386,12 @@ void erasePixels(PaintWall& w, int px, int py, double force, double dt)
 }
 
 
+
 //------------------------------------------------------------------------------
 int main(int argc, char* argv[])
 {
 	resourceRoot = string(argv[0]).substr(0, string(argv[0]).find_last_of("/\\") + 1);
+	brushClock.start(true);
 
 	glutInit(&argc, argv);
 	screenW = glutGet(GLUT_SCREEN_WIDTH);
@@ -437,15 +484,23 @@ int main(int argc, char* argv[])
 	labelTimer = new cLabel(font);
 	labelTimer->setText("Time: " + cStr(gameDuration, 1) + "s");
 	labelTimer->m_fontColor.setRed();
-	labelTimer->setFontScale(1.5);
+	labelTimer->setFontScale(2.5);
+	///score label
 	camera->m_frontLayer->addChild(labelTimer);
+	labelScore = new cLabel(font);
+	labelScore-> m_fontColor.set(1.0, 1.0, 1.0, 3.0);
+	labelScore->setFontScale(1.2);
+	camera->m_frontLayer->addChild(labelScore);
+
 
 
 	// Start message (bottom-center)
 	labelStartMessage = new cLabel(font);
 	labelStartMessage->setText("Press SPACE to start paint challenge");
-	labelStartMessage->m_fontColor.setYellow();
+	labelStartMessage->m_fontColor.set(1.0, 1.0, 0.0, 3.0); // Full RGB yellow with full opacity
 	labelStartMessage->setFontScale(2.5);
+
+
 
 
 	camera->m_frontLayer->addChild(labelStartMessage);
@@ -459,18 +514,18 @@ int main(int argc, char* argv[])
 
 
 	handler = new cHapticDeviceHandler();
-// grasp
+	// grasp
 	for (int i = 0; i < NUM_TOOLS; ++i)
 	{
 		graspLine[i] = new cShapeLine();
 		graspLine[i]->setShowEnabled(false);
 		graspLine[i]->setLineWidth(2.0);
 		if (i == 0)
-			graspLine[i]->m_colorPointA.setBlue();   
+			graspLine[i]->m_colorPointA.setBlue();
 		else
-			graspLine[i]->m_colorPointA.setRed();  
+			graspLine[i]->m_colorPointA.setRed();
 
-		graspLine[i]->m_colorPointB = graspLine[i]->m_colorPointA; 
+		graspLine[i]->m_colorPointB = graspLine[i]->m_colorPointA;
 		world->addChild(graspLine[i]);
 	}
 
@@ -490,11 +545,12 @@ int main(int argc, char* argv[])
 		hapticDevice[i]->setEnableGripperUserSwitch(true);
 		tool[i]->setLocalRot(camera->getLocalRot());
 		tool[i]->setWaitForSmallForce(true);
+
 		tool[i]->start();
-		tool[i]->m_hapticPoint->m_sphereProxy->m_material->setColor(toolPaintColor[i]);
+		tool[i]->m_hapticPoint->m_sphereProxy->m_material->setColor(getDynamicToolColor(i));
 		workspaceScaleFactor[i] = tool[i]->getWorkspaceScaleFactor();
 		maxStiffness[i] = hapticDevice[i]->getSpecifications().m_maxLinearStiffness / workspaceScaleFactor[i];
-		
+
 
 		world->addChild(tool[i]);
 	}
@@ -527,7 +583,7 @@ int main(int argc, char* argv[])
 	cMatrix3d rotLeft;  rotLeft.setAxisAngleRotationDeg(1, 0, 0, 270);
 	leftWall.mesh = createPlane(ROOM_W, ROOM_H,
 		cVector3d(0, -HALF_D, FLOOR_Z + ROOM_H * 0.5), rotLeft, cColorf(1, 1, 1));
-	world->addChild(leftWall.mesh); 
+	world->addChild(leftWall.mesh);
 
 	setupPaintWall(leftWall, PATH_FOAM,
 		0.1 * maxStiffness[0],   // very soft
@@ -542,6 +598,7 @@ int main(int argc, char* argv[])
 	normalBack->createMap(backWall.texture);
 	backWall.mesh->m_normalMap = normalBack;
 	backWall.mesh->m_material->setUseHapticShading(true);
+	backWall.mesh->m_material->setTextureLevel(10.0);
 
 
 
@@ -551,7 +608,7 @@ int main(int argc, char* argv[])
 	leftWall.mesh->m_normalMap = normalLeft;
 	leftWall.mesh->m_material->setUseHapticShading(true);
 	leftWall.mesh->m_material->setTextureLevel(20.0);
-	
+
 
 
 	// Right wall
@@ -613,7 +670,7 @@ int main(int argc, char* argv[])
 	ceilingBlockingWall->m_material->setStiffness(0.6 * maxStiffness[0]);
 	world->addChild(ceilingBlockingWall);
 
-	
+
 
 	// ODE planes
 
@@ -691,7 +748,7 @@ int main(int argc, char* argv[])
 		box->setMaterial(*boxMaterial);  // Pass by reference
 
 		// Enable collision
-		box->createAABBCollisionDetector(toolRadius);
+		box->createAABBCollisionDetector(0.01);
 
 		// Add to ODE world
 		ODECube[i]->setImageModel(box);
@@ -715,10 +772,10 @@ int main(int argc, char* argv[])
 
 	//---------------------------------------------------------------
 
-	
 
-	labelHapticRate = new cLabel(font); 
-	labelHapticRate->m_fontColor.setBlack(); 
+
+	labelHapticRate = new cLabel(font);
+	labelHapticRate->m_fontColor.setBlack();
 	camera->m_frontLayer->addChild(labelHapticRate);
 	labelUltimate = new cLabel(font);
 	labelUltimate->m_fontColor.setRed();
@@ -740,55 +797,91 @@ void resizeWindow(int w, int h){ windowW = w; windowH = h; }
 void keySelect(unsigned char key, int x, int y)
 {
 	if (key == 27 || key == 'x') exit(0);
+
+	if (key == 'r')
+	{
+		cout << "Restart" << endl;
+		gameStarted = false;
+		gameEnded = false;
+		countdownRunning = false;
+		countdownFinished = false;
+		floatingMode = false;
+		ODEWorld->setGravity(cVector3d(0, 0, -9.81));
+
+		labelWinnerMessage->setText("");
+		labelStartMessage->setShowEnabled(true);
+		labelStartMessage->setText("Press SPACE to start!");
+		clearWalls();
+	}
+
 	if (key == ' ')
 	{
-		if (!gameStarted)
+		// Start countdown only if not already running
+		if (!gameStarted && !countdownRunning && !gameEnded)
 		{
-			gameStarted = true;
-			gameEnded = false;
+			cout << "Starting countdown..." << endl;
+			countdownRunning = true;
+			countdownFinished = false;
 			gameClock.reset();
 			gameClock.start();
+			clearWalls();
 
-			labelStartMessage->setText("");
+
+			floatingMode = true;
+			ODEWorld->setGravity(cVector3d(0, 0, 0));
+
 			labelWinnerMessage->setText("");
+			labelStartMessage->setFontScale(4.0);
+			labelStartMessage->setShowEnabled(true);
+			labelStartMessage->setText("3");
+		}
 
-			// Save fresh state of walls as "original"
-			leftWall.texture->m_image->copyTo(leftWall.originalImage);
-			rightWall.texture->m_image->copyTo(rightWall.originalImage);
-			backWall.texture->m_image->copyTo(backWall.originalImage);
-
-
-			// Count only visible (non-transparent) pixels
-			auto countVisiblePixels = [](const PaintWall& w) -> int {
-				int width = w.originalImage->getWidth();
-				int height = w.originalImage->getHeight();
-				int total = 0;
-				cColorb pixel;
-
-				for (int x = 0; x < width; ++x)
-				{
-					for (int y = 0; y < height; ++y)
-					{
-						w.originalImage->getPixelColor(x, y, pixel);
-						if (pixel.getA() > 0) total++;
-					}
-				}
-				return total;
-			};
-
-			leftWallTotalPixels = countVisiblePixels(leftWall);
-			rightWallTotalPixels = countVisiblePixels(rightWall);
-			backWallTotalPixels = countVisiblePixels(backWall);
+		// Optional: toggle floating mode manually with extra space press (after start)
+		if (gameStarted)
+		{
+			floatingMode = !floatingMode;
+			if (floatingMode)
+			{
+				cout << "Floating mode ON" << endl;
+				ODEWorld->setGravity(cVector3d(0, 0, 0));
+			}
+			else
+			{
+				cout << "Gravity ON" << endl;
+				ODEWorld->setGravity(cVector3d(0, 0, -9.81));
+			}
 		}
 	}
-	if (key == 'g') ODEWorld->setGravity(ODEWorld->getGravity().length()>0 ? cVector3d(0, 0, 0) : cVector3d(0, 0, -9.81));
-	if (key == 'f') fullscreen ? glutReshapeWindow(windowW, windowH), fullscreen = false : glutFullScreen(), fullscreen = true;
-	if (key == 'm') mirroredDisplay = !mirroredDisplay, camera->setMirrorVertical(mirroredDisplay);
-	if (key == 'c'){
+
+	if (key == 'f')
+	{
+		if (fullscreen)
+		{
+			glutReshapeWindow(windowW, windowH);
+			fullscreen = false;
+		}
+		else
+		{
+			glutFullScreen();
+			fullscreen = true;
+		}
+	}
+
+	if (key == 'm')
+	{
+		mirroredDisplay = !mirroredDisplay;
+		camera->setMirrorVertical(mirroredDisplay);
+	}
+
+	if (key == 'c')
+	{
 		backWall.originalImage->copyTo(backWall.texture->m_image);
 		leftWall.originalImage->copyTo(leftWall.texture->m_image);
 		rightWall.originalImage->copyTo(rightWall.texture->m_image);
-		backWall.texture->markForUpdate(); leftWall.texture->markForUpdate(); rightWall.texture->markForUpdate();
+
+		backWall.texture->markForUpdate();
+		leftWall.texture->markForUpdate();
+		rightWall.texture->markForUpdate();
 	}
 }
 void updateCameraPosition()
@@ -920,11 +1013,13 @@ void computeAndShowWinner()
 	int yMid = (windowH - labelWinnerMessage->getHeight()) / 2;
 	labelWinnerMessage->setLocalPos(xMid, yMid);
 
-	// Console printout
 	cout << "\n====== FINAL SCORES ======\n";
 	cout << "P1 (Left + Right Painted):  " << p1 << " %\n";
 	cout << "P2 (All Walls Untouched):   " << p2 << " %\n";
 	cout << "Winner: " << winner << endl;
+	labelScore->setText("P1: " + cStr(p1, 1) + "%   P2: " + cStr(p2, 1) + "%");
+	labelScore->setLocalPos(20, 100);
+
 }
 
 
@@ -955,7 +1050,10 @@ void updateGraphics(void)
 		stringstream ss;
 		ss << "Time: " << fixed << setprecision(1) << timeLeft << "s";
 		labelTimer->setText(ss.str());
-		labelTimer->setLocalPos(windowW - labelTimer->getWidth() - 20, windowH - labelTimer->getHeight() - 20);
+		int centerX = (windowW - labelTimer->getWidth()) / 2;
+		int topY = windowH - labelTimer->getHeight() - 30; // 30 px from the top
+		labelTimer->setLocalPos(centerX, topY);
+
 
 		labelStartMessage->setLocalPos(20, windowH - labelStartMessage->getHeight() - 20);
 
@@ -968,36 +1066,79 @@ void updateGraphics(void)
 	else if (!gameStarted && !gameEnded)
 	{
 		labelTimer->setText("Time: " + cStr(gameDuration, 1) + "s");
-		labelTimer->setLocalPos(windowW - labelTimer->getWidth() - 20, windowH - labelTimer->getHeight() - 20);
+		int centerX = (windowW - labelTimer->getWidth()) / 2;
+		int topY = windowH - labelTimer->getHeight() - 30; // 30 px from the top
+		labelTimer->setLocalPos(centerX, topY);
+
 		labelStartMessage->setLocalPos(20, windowH - labelStartMessage->getHeight() - 20);
 	}
 
+	
+	if (countdownRunning && !countdownFinished)
+{
+    double elapsed = gameClock.getCurrentTimeSeconds();
+    int secondsLeft = int(countdownDuration - elapsed) + 1;
 
+    if (secondsLeft > 1)
+    {
+        labelStartMessage->setShowEnabled(true);
+        labelStartMessage->setText(cStr(secondsLeft));
+    }
+    else if (secondsLeft == 1)
+    {
+        labelStartMessage->setText("START!");
 
-
-	if (labelUltimate)
+    }
+    else
 	{
-		if (ultimateReady && !ultimateUsed)
-		{
-			labelUltimate->setShowEnabled(true);
-			labelUltimate->setText("PLAYER 1 ULTIMATE READY!");
-		}
-		else if (ultimateUsed && !ultimateActive)
-		{
-			labelUltimate->setShowEnabled(true);
-			labelUltimate->setText("ULTIMATE USED");
-		}
-		else if (ultimateActive)
-		{
-			labelUltimate->setShowEnabled(true);
-			labelUltimate->setText("ULTIMATE ACTIVE!");
-		}
-		else
-		{
-			labelUltimate->setShowEnabled(false);
-		}
-	}
+		clearWalls(); // clean walls right before gameplay starts
 
+        // Countdown finished, start the game
+        countdownRunning = false;
+        countdownFinished = true;
+        labelStartMessage->setText("");
+		labelStartMessage->setFontScale(2.5);
+
+        
+
+        leftWall.texture->m_image->copyTo(leftWall.originalImage);
+        rightWall.texture->m_image->copyTo(rightWall.originalImage);
+        backWall.texture->m_image->copyTo(backWall.originalImage);
+
+        // Count visible pixels
+        auto countVisiblePixels = [](const PaintWall& w) -> int {
+            int width = w.originalImage->getWidth();
+            int height = w.originalImage->getHeight();
+            int total = 0;
+            cColorb pixel;
+            for (int x = 0; x < width; ++x)
+                for (int y = 0; y < height; ++y)
+                {
+                    w.originalImage->getPixelColor(x, y, pixel);
+                    if (pixel.getA() > 0) total++;
+                }
+            return total;
+        };
+		// Count total target pixels
+		leftWallTotalPixels = countVisiblePixels(leftWall);
+		rightWallTotalPixels = countVisiblePixels(rightWall);
+		backWallTotalPixels = countVisiblePixels(backWall);
+		gameStarted = true;
+		gameEnded = false;
+		gameClock.reset();
+		gameClock.start();
+    }
+
+    // Position the countdown label in the middle
+    int labelX = (windowW - labelStartMessage->getWidth()) / 2;
+    int labelY = (windowH - labelStartMessage->getHeight()) / 2;
+    labelStartMessage->setLocalPos(labelX, labelY);
+}
+
+
+
+
+	
 
 }
 
@@ -1016,7 +1157,7 @@ void updateHaptics(void)
 		clock.stop();
 		double dt = clock.getCurrentTimeSeconds();
 		double elapsedTime = gameClock.getCurrentTimeSeconds();
-		
+
 		clock.reset();
 		clock.start();
 
@@ -1037,7 +1178,7 @@ void updateHaptics(void)
 
 			cHapticPoint* hp = tool[i]->getHapticPoint(0);
 
-	
+
 
 			//------------------------------------------------------------------
 			// GRAB LOGIC 
@@ -1045,7 +1186,7 @@ void updateHaptics(void)
 			cVector3d toolPos = tool[i]->getDeviceGlobalPos();
 			bool buttonPressed = false;
 			hapticDevice[i]->getUserSwitch(0, buttonPressed);
-		
+
 
 			if (!isGrasping[i] && buttonPressed)
 			{
@@ -1109,11 +1250,13 @@ void updateHaptics(void)
 					if (i == 0)
 					{
 						// Player 1 paints
-						paintPixels(*w, px, py, toolPaintColor[i], forceMag, dt);
+						cColorb dynamicColor = getDynamicToolColor(i);
+						paintPixels(*w, px, py, dynamicColor, forceMag, dt);
 					}
 					else if (i == 1)
 					{
-						// Player 2 erases: restore original canvas texture
+						// Player 2 erases
+
 						erasePixels(*w, px, py, forceMag, dt);
 					}
 				}
@@ -1121,12 +1264,31 @@ void updateHaptics(void)
 
 
 			// send forces to device
+
 			tool[i]->applyToDevice();
 		}
 
 
+		if (floatingMode)
+		{
+			for (int i = 0; i < 10; ++i)
+			{
+				if (!ODECube[i]) continue;
 
-		// physics
+				// Small random drifting force
+				double fx = 0.5 * sin(0.3 * elapsedTime + i);
+				double fy = 0.5 * cos(0.2 * elapsedTime + i * 2);
+				double fz = 0.5 * sin(0.5 * elapsedTime + i * 1.5);
+
+				cVector3d floatForce(fx, fy, fz);
+				ODECube[i]->addExternalForce(floatForce);
+
+				// Optional: small torque for rotation
+				cVector3d torque(0.01 * sin(elapsedTime + i), 0.01 * cos(elapsedTime + i), 0.01);
+				ODECube[i]->addExternalTorque(torque);
+			}
+		}
+
 		ODEWorld->updateDynamics(dt);
 
 		// hz counter
