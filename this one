@@ -1016,10 +1016,7 @@ void updateHaptics(void)
 		clock.stop();
 		double dt = clock.getCurrentTimeSeconds();
 		double elapsedTime = gameClock.getCurrentTimeSeconds();
-		if (!ultimateReady && elapsedTime >= gameDuration / 2.0) {
-			ultimateReady = true;
-			cout << "ULTIMATE READY!" << endl;
-		}
+		
 		clock.reset();
 		clock.start();
 
@@ -1048,19 +1045,7 @@ void updateHaptics(void)
 			cVector3d toolPos = tool[i]->getDeviceGlobalPos();
 			bool buttonPressed = false;
 			hapticDevice[i]->getUserSwitch(0, buttonPressed);
-			if (i == 0) {
-				//  Ultimate activation (PLAYER 1 presses button 1, n haptic dvice ideaally)
-				bool ultButtonPressed = false;
-				hapticDevice[0]->getUserSwitch(1, ultButtonPressed);
-
-				if (ultimateReady && !ultimateUsed && ultButtonPressed) {
-					ultimateUsed = true;
-					ultimateActive = true;
-					ultimateTimer.reset();
-					ultimateTimer.start();
-					cout << "ULTIMATE ACTIVATED!" << endl;
-				}
-			}
+		
 
 			if (!isGrasping[i] && buttonPressed)
 			{
@@ -1097,22 +1082,6 @@ void updateHaptics(void)
 				graspLine[i]->setShowEnabled(false);
 			}
 
-
-
-			if (ultimateActive) {
-				double ultimateTime = ultimateTimer.getCurrentTimeSeconds();
-				if (ultimateTime > ultimateDuration) {
-					ultimateActive = false;
-					cout << "Ultimate effect ended." << endl;
-				}
-				else {
-					// SLOW Player 2 down
-					tool[1]->setWorkspaceScaleFactor(0.6);
-				}
-			}
-			else {
-				tool[1]->setWorkspaceScaleFactor(1.0);  // Normal movement
-			}
 
 
 			//------------------------------------------------------------------
