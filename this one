@@ -57,7 +57,7 @@ struct PaintWall
 cPrecisionClock gameClock;
 bool gameStarted = false;
 bool gameEnded = false;
-double gameDuration = 60.0; // seconds        ----------------------
+double gameDuration = 10.0; // seconds        ----------------------
 bool countdownRunning = false;
 double countdownStartTime = 0.0;
 double countdownDuration = 3.0; // 3 seconds
@@ -113,6 +113,19 @@ cMesh* hanoiRods[3];
 
 //---------------------------------------------------------------------------------to do
 
+// Magnetic Spheres
+const int NUM_SPHERES_A = 5;
+const int NUM_SPHERES_B = 5;
+const double SPHERE_RADIUS = 0.1; // adjustable
+cODEGenericBody* spheres_A[NUM_SPHERES_A];
+cODEGenericBody* spheres_B[NUM_SPHERES_B];
+cVector3d sphereVel_A[NUM_SPHERES_A];
+cVector3d sphereVel_B[NUM_SPHERES_B];
+
+// Room
+const double FLOOR_Z = -1.0;
+
+
 // For grasping logic
 const int NUM_TOOLS = 2;
 
@@ -153,10 +166,12 @@ int mouseX = 0, mouseY = 0;
 string resourceRoot;
 #define RESOURCE_PATH(p)    (char*)((resourceRoot+string(p)).c_str())
 
-static const string PATH_CANVAS = R"(D:\chai3d-3.1.1-VisualStudio\chai3d-3.1.1\bin\resources\images\canvas.jpg)";
-static const string PATH_STONE = R"(D:\chai3d-3.1.1-VisualStudio\chai3d-3.1.1\bin\resources\images\brick-color.png)";
-static const string PATH_FOAM = R"(D:\chai3d-3.1.1-VisualStudio\chai3d-3.1.1\bin\resources\images\whitefoam.jpg)";
-static const string PATH_FLOOR = R"(D:\chai3d-3.1.1-VisualStudio\chai3d-3.1.1\bin\resources\images\lines.png)";
+static const string PATH_CANVAS = R"(D:\chai3d-3.1.1\bin\resources\images\canvas.jpg)";
+static const string PATH_STONE = R"(D:\chai3d-3.1.1\bin\resources\images\brick-color.png)";
+static const string PATH_FOAM = R"(D:\chai3d-3.1.1\bin\resources\images\whitefoam.jpg)";
+static const string PATH_FLOOR = R"(D:\chai3d-3.1.1\bin\resources\images\lines.png)";
+static const string PATH_SPHERE_1 = R"(D:\chai3d-3.1.1\bin\resources\images\spheremap-1.jpg)";
+static const string PATH_SPHERE_2 = R"(D:\chai3d-3.1.1\bin\resources\images\spheremap-6.jpg)";
 
 // Painting constants
 const double K_INK = 30.0;
@@ -487,7 +502,7 @@ int main(int argc, char* argv[])
 	///score label
 	camera->m_frontLayer->addChild(labelTimer);
 	labelScore = new cLabel(font);
-	labelScore-> m_fontColor.set(1.0, 1.0, 1.0, 3.0);
+	labelScore->m_fontColor.set(1.0, 1.0, 1.0, 3.0);
 	labelScore->setFontScale(1.2);
 	camera->m_frontLayer->addChild(labelScore);
 
@@ -740,8 +755,8 @@ int main(int argc, char* argv[])
 		cMaterial* boxMaterial = new cMaterial();
 		boxMaterial->setColor(cColorf(0.3 + 0.2 * i, 0.5, 1.0 - 0.3 * i));
 		boxMaterial->setStiffness(0.2 * maxStiffness[0]);
-		boxMaterial->setStaticFriction(0.3);
-		boxMaterial->setDynamicFriction(0.2);
+		boxMaterial->setStaticFriction(3);
+		boxMaterial->setDynamicFriction(1);
 
 		// Assign material to the box
 		box->setMaterial(*boxMaterial);  // Pass by reference
@@ -762,10 +777,98 @@ int main(int argc, char* argv[])
 
 
 
-	// Spheres:
+	// Load texture only once
+	cTexture2dPtr texture_1 = cTexture2d::create();
+	texture_1->loadFromFile(PATH_SPHERE_1);
+	// Enable spherical mapping
+	texture_1->setSphericalMappingEnabled(true);
 
-	//-------------------------------add objects here---------------
-	//pool balls
+	// Load texture only once
+	cTexture2dPtr texture_2 = cTexture2d::create();
+	texture_2->loadFromFile(PATH_SPHERE_2);
+	// Enable spherical mapping
+	texture_2->setSphericalMappingEnabled(true);
+
+	// --- Create magnetic spheres_A ---
+	for (int i = 0; i < NUM_SPHERES_A; i++)
+	{
+		// Create mesh and sphere geometry
+		cMesh* mesh = new cMesh();
+		cCreateSphere(mesh, SPHERE_RADIUS, 32, 32); // higher resolution for smoother texture
+
+		// Apply texture
+		mesh->setTexture(texture_1);
+		mesh->setUseTexture(true);
+
+		// Apply material
+		cMaterialPtr mat = cMaterial::create();
+		mat->setWhite(); // necessary for texture to appear with correct color
+		mat->setStiffness(0.3 * maxStiffness[0]);
+		mat->setStaticFriction(0.3);
+		mat->setDynamicFriction(0.2);
+		mesh->setMaterial(mat);
+
+		// Enable collision and haptics
+		mesh->createAABBCollisionDetector(toolRadius);
+		mesh->setHapticEnabled(true);
+
+		// Compute initial position in circle
+		double angle = i * 0.4;
+		double radius = 0.5;
+		cVector3d pos(
+			radius * cos(angle),
+			radius * sin(angle),
+			FLOOR_Z + SPHERE_RADIUS + 0.02 * (i % 3)
+			);
+
+		// Create ODE body
+		cODEGenericBody* sphereBody = new cODEGenericBody(ODEWorld);
+		sphereBody->setImageModel(mesh);
+		sphereBody->createDynamicSphere(SPHERE_RADIUS);
+		sphereBody->setMass(0.02);
+		sphereBody->setLocalPos(pos);
+
+		// Add to world and store
+		world->addChild(mesh);
+		spheres_A[i] = sphereBody;
+		sphereVel_A[i] = cVector3d(0, 0, 0);
+	}
+
+	// --- Create Type-B magnetic spheres ---
+	for (int i = 0; i < NUM_SPHERES_B; i++)
+	{
+		cMesh* mesh = new cMesh();
+		cCreateSphere(mesh, SPHERE_RADIUS, 32, 32);
+
+		// Apply texture
+		mesh->setTexture(texture_2);
+		mesh->setUseTexture(true);
+
+		// Optional: different texture or color
+		cMaterialPtr mat = cMaterial::create();
+		mat->setStiffness(0.3 * maxStiffness[0]);
+		mesh->setMaterial(mat);
+
+		mesh->createAABBCollisionDetector(toolRadius);
+		mesh->setHapticEnabled(true);
+
+		cVector3d pos(
+			0.3 * cos(i * 0.8),
+			0.3 * sin(i * 0.8),
+			FLOOR_Z + SPHERE_RADIUS + 0.05
+			);
+
+		cODEGenericBody* body = new cODEGenericBody(ODEWorld);
+		body->setImageModel(mesh);
+		body->createDynamicSphere(SPHERE_RADIUS);
+		body->setMass(0.02);
+		body->setLocalPos(pos);
+
+		world->addChild(mesh);
+		spheres_B[i] = body;
+		sphereVel_B[i] = cVector3d(0, 0, 0);
+	}
+
 
 
 
@@ -807,6 +910,8 @@ void keySelect(unsigned char key, int x, int y)
 		floatingMode = false;
 		ODEWorld->setGravity(cVector3d(0, 0, -9.81));
 
+		labelScore->setText("");
+
 		labelWinnerMessage->setText("");
 		labelStartMessage->setShowEnabled(true);
 		labelStartMessage->setText("Press SPACE to start!");
@@ -824,6 +929,9 @@ void keySelect(unsigned char key, int x, int y)
 			gameClock.reset();
 			gameClock.start();
 			clearWalls();
+			labelScore->setText("");
+
+
 
 
 			floatingMode = true;
@@ -988,14 +1096,14 @@ void graphicsTimer(int d){ if (simulationRunning) glutPostRedisplay(); glutTimer
 void computeAndShowWinner()
 {
 	// Player 1: Total painted % on all 3 walls
-	double p1 = computePaintCoverage(leftWall, leftWallTotalPixels)
+	double p1 = (computePaintCoverage(leftWall, leftWallTotalPixels)
 		+ computePaintCoverage(rightWall, rightWallTotalPixels)
-		+ computePaintCoverage(backWall, backWallTotalPixels);
+		+ computePaintCoverage(backWall, backWallTotalPixels))/3.0;
 
 	// Player 2: Total unpainted % on all 3 walls
-	double p2 = computeUnpaintedCoverage(leftWall, leftWallTotalPixels)
+	double p2 = (computeUnpaintedCoverage(leftWall, leftWallTotalPixels)
 		+ computeUnpaintedCoverage(rightWall, rightWallTotalPixels)
-		+ computeUnpaintedCoverage(backWall, backWallTotalPixels);
+		+ computeUnpaintedCoverage(backWall, backWallTotalPixels))/3.0;
 
 	// Decide winner
 	string winner;
@@ -1016,7 +1124,11 @@ void computeAndShowWinner()
 	cout << "P1 (Left + Right Painted):  " << p1 << " %\n";
 	cout << "P2 (All Walls Untouched):   " << p2 << " %\n";
 	cout << "Winner: " << winner << endl;
+	labelScore->setFontScale(2.0);
 	labelScore->setText("P1: " + cStr(p1, 1) + "%   P2: " + cStr(p2, 1) + "%");
+	// Set font size (e.g., 28 — adjust as needed)
+	// Set font color to black
+	labelScore->m_fontColor.setBlack();
 	labelScore->setLocalPos(20, 100);
 
 }
@@ -1053,7 +1165,6 @@ void updateGraphics(void)
 		int topY = windowH - labelTimer->getHeight() - 30; // 30 px from the top
 		labelTimer->setLocalPos(centerX, topY);
 
-
 		labelStartMessage->setLocalPos(20, windowH - labelStartMessage->getHeight() - 20);
 
 		if (timeLeft <= 0.0)
@@ -1061,6 +1172,7 @@ void updateGraphics(void)
 			gameEnded = true;              // Prevent future updates
 			computeAndShowWinner();       // Run winner logic once
 		}
+
 	}
 	else if (!gameStarted && !gameEnded)
 	{
@@ -1072,72 +1184,72 @@ void updateGraphics(void)
 		labelStartMessage->setLocalPos(20, windowH - labelStartMessage->getHeight() - 20);
 	}
 
-	
+
 	if (countdownRunning && !countdownFinished)
-{
-    double elapsed = gameClock.getCurrentTimeSeconds();
-    int secondsLeft = int(countdownDuration - elapsed) + 1;
-
-    if (secondsLeft > 1)
-    {
-        labelStartMessage->setShowEnabled(true);
-        labelStartMessage->setText(cStr(secondsLeft));
-    }
-    else if (secondsLeft == 1)
-    {
-        labelStartMessage->setText("START!");
-
-    }
-    else
 	{
-		clearWalls(); // clean walls right before gameplay starts
+		double elapsed = gameClock.getCurrentTimeSeconds();
+		int secondsLeft = int(countdownDuration - elapsed) + 1;
 
-        // Countdown finished, start the game
-        countdownRunning = false;
-        countdownFinished = true;
-        labelStartMessage->setText("");
-		labelStartMessage->setFontScale(2.5);
+		if (secondsLeft > 1)
+		{
+			labelStartMessage->setShowEnabled(true);
+			labelStartMessage->setText(cStr(secondsLeft));
+		}
+		else if (secondsLeft == 1)
+		{
+			labelStartMessage->setText("START!");
 
-        
+		}
+		else
+		{
+			clearWalls(); // clean walls right before gameplay starts
 
-        leftWall.texture->m_image->copyTo(leftWall.originalImage);
-        rightWall.texture->m_image->copyTo(rightWall.originalImage);
-        backWall.texture->m_image->copyTo(backWall.originalImage);
-
-        // Count visible pixels
-        auto countVisiblePixels = [](const PaintWall& w) -> int {
-            int width = w.originalImage->getWidth();
-            int height = w.originalImage->getHeight();
-            int total = 0;
-            cColorb pixel;
-            for (int x = 0; x < width; ++x)
-                for (int y = 0; y < height; ++y)
-                {
-                    w.originalImage->getPixelColor(x, y, pixel);
-                    if (pixel.getA() > 0) total++;
-                }
-            return total;
-        };
-		// Count total target pixels
-		leftWallTotalPixels = countVisiblePixels(leftWall);
-		rightWallTotalPixels = countVisiblePixels(rightWall);
-		backWallTotalPixels = countVisiblePixels(backWall);
-		gameStarted = true;
-		gameEnded = false;
-		gameClock.reset();
-		gameClock.start();
-    }
-
-    // Position the countdown label in the middle
-    int labelX = (windowW - labelStartMessage->getWidth()) / 2;
-    int labelY = (windowH - labelStartMessage->getHeight()) / 2;
-    labelStartMessage->setLocalPos(labelX, labelY);
-}
+			// Countdown finished, start the game
+			countdownRunning = false;
+			countdownFinished = true;
+			labelStartMessage->setText("");
+			labelStartMessage->setFontScale(2.5);
 
 
 
+			leftWall.texture->m_image->copyTo(leftWall.originalImage);
+			rightWall.texture->m_image->copyTo(rightWall.originalImage);
+			backWall.texture->m_image->copyTo(backWall.originalImage);
 
-	
+			// Count visible pixels
+			auto countVisiblePixels = [](const PaintWall& w) -> int {
+				int width = w.originalImage->getWidth();
+				int height = w.originalImage->getHeight();
+				int total = 0;
+				cColorb pixel;
+				for (int x = 0; x < width; ++x)
+				for (int y = 0; y < height; ++y)
+				{
+					w.originalImage->getPixelColor(x, y, pixel);
+					if (pixel.getA() > 0) total++;
+				}
+				return total;
+			};
+			// Count total target pixels
+			leftWallTotalPixels = countVisiblePixels(leftWall);
+			rightWallTotalPixels = countVisiblePixels(rightWall);
+			backWallTotalPixels = countVisiblePixels(backWall);
+			gameStarted = true;
+			gameEnded = false;
+			gameClock.reset();
+			gameClock.start();
+		}
+
+		// Position the countdown label in the middle
+		int labelX = (windowW - labelStartMessage->getWidth()) / 2;
+		int labelY = (windowH - labelStartMessage->getHeight()) / 2;
+		labelStartMessage->setLocalPos(labelX, labelY);
+	}
+
+
+
+
+
 
 }
 
@@ -1266,6 +1378,90 @@ void updateHaptics(void)
 
 			tool[i]->applyToDevice();
 		}
+		// --- Magnetic sphere physics update ---
+		const double K_MAGNET = 200.0;          // magnetic force constant (increased)
+		const double SPHERE_STIFFNESS = 500.0;  // collision repulsion force
+		const double SPHERE_MASS = 0.04;        // mass of each sphere
+		const double K_DAMPING = 0.99;          // velocity damping factor
+		const double MIN_ATTRACT_DIST = 0.06;   // minimum distance to start attraction
+		const double MAX_ATTRACT_DIST = 0.3;    // maximum distance for attraction
+		const double REPEL_STRENGTH = 400.0;	// strength for A-A or B-B repulsion
+
+		// Initialize forces
+		cVector3d forceA[NUM_SPHERES_A];
+		cVector3d forceB[NUM_SPHERES_B];
+		for (int i = 0; i < NUM_SPHERES_A; i++) forceA[i].zero();
+		for (int i = 0; i < NUM_SPHERES_B; i++) forceB[i].zero();
+
+		// --- A-A repulsion ---
+		for (int i = 0; i < NUM_SPHERES_A; i++)
+		{
+			for (int j = i + 1; j < NUM_SPHERES_A; j++)
+			{
+				cVector3d pos0 = spheres_A[i]->getLocalPos();
+				cVector3d pos1 = spheres_A[j]->getLocalPos();
+				cVector3d dir = pos1 - pos0;
+				double dist = dir.length();
+				if (dist > 1e-5) dir.normalize();
+
+				if (dist < 2.5 * SPHERE_RADIUS)
+				{
+					cVector3d f = -REPEL_STRENGTH * (2.0 * SPHERE_RADIUS - dist) * dir;
+					forceA[i] -= f;
+					forceA[j] += f;
+				}
+			}
+		}
+
+		// --- B-B repulsion ---
+		for (int i = 0; i < NUM_SPHERES_B; i++)
+		{
+			for (int j = i + 1; j < NUM_SPHERES_B; j++)
+			{
+				cVector3d pos0 = spheres_B[i]->getLocalPos();
+				cVector3d pos1 = spheres_B[j]->getLocalPos();
+				cVector3d dir = pos1 - pos0;
+				double dist = dir.length();
+				if (dist > 1e-5) dir.normalize();
+
+				if (dist < 2.5 * SPHERE_RADIUS)
+				{
+					cVector3d f = -REPEL_STRENGTH * (2.0 * SPHERE_RADIUS - dist) * dir;
+					forceB[i] -= f;
+					forceB[j] += f;
+				}
+			}
+		}
+
+		// --- A-B attraction ---
+		for (int i = 0; i < NUM_SPHERES_A; i++)
+		{
+			for (int j = 0; j < NUM_SPHERES_B; j++)
+			{
+				cVector3d posA = spheres_A[i]->getLocalPos();
+				cVector3d posB = spheres_B[j]->getLocalPos();
+				cVector3d dir = posB - posA;
+				double dist = dir.length();
+				if (dist > 1e-5) dir.normalize();
+
+				if (dist > MIN_ATTRACT_DIST && dist < MAX_ATTRACT_DIST)
+				{
+					// Attraction pulls A toward B, and B toward A
+					double strength = K_MAGNET * (dist - MIN_ATTRACT_DIST);
+					cVector3d f = strength * dir;  // Negative to pull them together
+
+					forceA[i] += f;
+					forceB[j] -= f;
+				}
+			}
+		}
+
+		// --- Apply forces to each sphere ---
+		for (int i = 0; i < NUM_SPHERES_A; i++)
+			spheres_A[i]->addExternalForce(forceA[i]);
+
+		for (int i = 0; i < NUM_SPHERES_B; i++)
+			spheres_B[i]->addExternalForce(forceB[i]);
 
 
 		if (floatingMode)
@@ -1275,15 +1471,15 @@ void updateHaptics(void)
 				if (!ODECube[i]) continue;
 
 				// Small random drifting force
-				double fx = 0.5 * sin(0.3 * elapsedTime + i);
-				double fy = 0.5 * cos(0.2 * elapsedTime + i * 2);
-				double fz = 0.5 * sin(0.5 * elapsedTime + i * 1.5);
+				double fx = 1.0 * sin(0.3 * elapsedTime + i);
+				double fy = 1.0 * cos(0.2 * elapsedTime + i * 2);
+				double fz = 1.0 * sin(0.5 * elapsedTime + i * 1.5);
 
 				cVector3d floatForce(fx, fy, fz);
 				ODECube[i]->addExternalForce(floatForce);
 
 				// small torque for rotation
-				cVector3d torque(0.01 * sin(elapsedTime + i), 0.01 * cos(elapsedTime + i), 0.01);
+				cVector3d torque(0.02 * sin(elapsedTime + i), 0.02 * cos(elapsedTime + i), 0.02);
 				ODECube[i]->addExternalTorque(torque);
 			}
 		}
