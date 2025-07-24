@@ -76,8 +76,7 @@ cLabel* labelUltimate = nullptr;
 bool floatingMode = false;
 
 
-
-
+int currentGame = 0;
 
 
 cFont* font = NEW_CFONTCALIBRI20();
@@ -1283,7 +1282,7 @@ void updateHaptics(void)
 				cVector3d floatForce(fx, fy, fz);
 				ODECube[i]->addExternalForce(floatForce);
 
-				// Optional: small torque for rotation
+				// small torque for rotation
 				cVector3d torque(0.01 * sin(elapsedTime + i), 0.01 * cos(elapsedTime + i), 0.01);
 				ODECube[i]->addExternalTorque(torque);
 			}
