@@ -55,7 +55,7 @@ struct PaintWall
 cPrecisionClock gameClock;
 bool gameStarted = false;
 bool gameEnded = false;
-double gameDuration = 30; // seconds        -----------------------------------------------------------------
+double gameDuration = 90; // seconds        -----------------------------------------------------------------
 bool countdownRunning = false;
 bool ultEnding[2] = { false, false };           
 cPrecisionClock ultEndingTimer[2];              
@@ -428,9 +428,14 @@ int main(int argc, char* argv[])
 	cout << "[m]     - Mirror display" << endl;
 	cout << "[x]     - Exit application" << endl << endl;
 
+	cout << "Mouse Options:" << endl;
+	cout << "Move around, Scroll to zoom." << endl;
+
+
+
 	cout << "Haptic Device Buttons:" << endl;
 	cout << "Big Button   - Grab/Throw objects" << endl;
-	//cout << "Side Button  - Activate ultimate (when ready)" << endl << endl;
+	cout << "Side Button  - Activate ultimate (when ready)" << endl << endl;
 
 
 	resourceRoot = string(argv[0]).substr(0, string(argv[0]).find_last_of("/\\") + 1);
@@ -565,7 +570,7 @@ int main(int argc, char* argv[])
 
 	// Start message (bottom-center)
 	labelStartMessage = new cLabel(font);
-	labelStartMessage->setText("Press SPACE to start Paint challenge");
+	labelStartMessage->setText("Feel free to explore around, Press SPACE when ready start the Paint challenge.");
 	labelStartMessage->m_fontColor.set(1.0, 1.0, 0.0, 3.0); // Full RGB yellow with full opacity
 	labelStartMessage->setFontScale(2.5);
 	//labelStartMessage->setLocalPos(20, -40);
@@ -1352,17 +1357,6 @@ void updateHaptics(void)
 		double dt = clock.getCurrentTimeSeconds();
 		double elapsedTime = gameClock.getCurrentTimeSeconds();
 
-		////Mirror
-		//if (elapsedTime >= 5.0 && elapsedTime < 10.0 && !mirrorActivated) {
-		//	mirroredDisplay = true;
-		//	camera->setMirrorVertical(mirroredDisplay);
-		//	mirrorActivated = true;
-		//}
-		//else if (elapsedTime >= 10.0 && mirrorActivated) {
-		//	mirroredDisplay = false;
-		//	camera->setMirrorVertical(mirroredDisplay);
-		//	mirrorActivated = false;
-		//}
 		//----------------------------------------
 		// 1) Unlock ultimates at 1/3 of the game
 		//----------------------------------------
@@ -1450,19 +1444,20 @@ void updateHaptics(void)
 			if (hp && hp->getNumCollisionEvents() > 0)
 			{
 				auto ev = hp->getCollisionEvent(0);
-				PaintWall* w = nullptr;
+				PaintWall* w = nullptr;//create the pointer to decide which wall it hits.
 				if (ev->m_object == backWall.mesh)  w = &backWall;
 				else if (ev->m_object == leftWall.mesh)  w = &leftWall;
 				else if (ev->m_object == rightWall.mesh) w = &rightWall;
 
-				if (w)
+				if (w)//if it touches one of the walls indeed
 				{
-					unsigned tri = ev->m_index;
+					unsigned tri = ev->m_index;//get the triangle index of the collision one
 					cVector3d tex = ev->m_triangles->getTexCoordAtPosition(tri, ev->m_localPos);
+					//change the location, texture, pixel
 					int px, py;
 					w->texture->m_image->getPixelLocation(tex, px, py);
 					double forceMag = tool[i]->getDeviceGlobalForce().length();
-
+					//the force of the device give the radius of the brush
 					if (i == 0) {
 						paintPixels(*w, px, py, getDynamicToolColor(i), forceMag, dt);
 					}
