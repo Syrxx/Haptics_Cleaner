@@ -57,6 +57,9 @@ bool gameStarted = false;
 bool gameEnded = false;
 double gameDuration = 30; // seconds        -----------------------------------------------------------------
 bool countdownRunning = false;
+bool ultEnding[2] = { false, false };           
+cPrecisionClock ultEndingTimer[2];              
+double ultEndingDisplayTime = 2.0;              
 double countdownStartTime = 0.0;
 double countdownDuration = 3.0; // 3 seconds
 cPrecisionClock brushClock;
@@ -1363,7 +1366,7 @@ void updateHaptics(void)
 		//----------------------------------------
 		// 1) Unlock ultimates at 1/3 of the game
 		//----------------------------------------
-		const double oneThird = 0;//gameDuration / 3.0;
+		const double oneThird = gameDuration / 3.0;
 		for (int i = 0; i < 2; ++i) {
 			if (!ultReady[i] && !ultUsed[i] && gameStarted && elapsedTime >= oneThird) {
 				ultReady[i] = true;
@@ -1617,25 +1620,33 @@ void updateHaptics(void)
 		ODEWorld->updateDynamics(dt);
 		// 5) Ultimate timeout (per player)
 		for (int i = 0; i < 2; ++i) {
-			if (ultActive[i] &&
-				ultTimer[i].getCurrentTimeSeconds() >= ultDuration[i])
+			if (ultActive[i] && ultTimer[i].getCurrentTimeSeconds() >= ultDuration[i])
 			{
 				ultActive[i] = false;
-				labelUltStatus[i]->setText("");
-				labelUltStatus[i]->setEnabled(false);
+				ultEnding[i] = true;  
+				ultEndingTimer[i].reset();
+				ultEndingTimer[i].start();
 				cout << "ULTIMATE ended for Player " << (i + 1) << endl;
 
-
+				// reset
 				if (i == 0) {
-					// Painter’s ult ended → Cleaner can erase again
+					labelUltStatus[i]->setText("Silence ended");
 					canErase = true;
 				}
 				else {
-					// Eraser’s ult ended → turn off the mirror
 					mirroredDisplay = false;
 					camera->setMirrorVertical(mirroredDisplay);
-					cout << "Cleaner ultimate ended: MIRROR OFF" << endl;
+					labelUltStatus[i]->setText("MIRROR OFF");
+	
 				}
+			}
+
+			// phase:clear the text for real after 2 s
+			if (ultEnding[i] && ultEndingTimer[i].getCurrentTimeSeconds() >= ultEndingDisplayTime)
+			{
+				ultEnding[i] = false;
+				labelUltStatus[i]->setText("");
+				labelUltStatus[i]->setEnabled(false);
 			}
 		}
 
